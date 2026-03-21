@@ -1,20 +1,9 @@
 import { definePlugin, runWorker, } from "@paperclipai/plugin-sdk";
-import { CONTENT_PATTERNS, DEFAULT_CONFIG, JOB_KEYS, PLUGIN_ID, POST_ID_PATTERNS, STATE_KEYS, } from "./constants.js";
-// ─── Helpers ────────────────────────────────────────────────────────────────
+import { DEFAULT_CONFIG, DEFAULT_NOTIFICATION_CHANNEL, DEFAULT_NOTIFICATION_PREFIX, JOB_KEYS, PLUGIN_ID, STATE_KEYS, } from "./constants.js";
+// ---- Helpers ----
 async function getConfig(ctx) {
     const config = await ctx.config.get();
     return { ...DEFAULT_CONFIG, ...config };
-}
-function isContentTask(title) {
-    return CONTENT_PATTERNS.some((pattern) => pattern.test(title));
-}
-function extractPostId(text) {
-    for (const pattern of POST_ID_PATTERNS) {
-        const match = pattern.exec(text);
-        if (match?.[1])
-            return match[1];
-    }
-    return null;
 }
 function minutesSince(dateOrIso) {
     const time = dateOrIso instanceof Date ? dateOrIso.getTime() : new Date(dateOrIso).getTime();
@@ -32,23 +21,197 @@ async function getPipelineData(ctx, issueId) {
 async function setPipelineData(ctx, issueId, data) {
     await ctx.state.set({ scopeKind: "issue", scopeId: issueId, stateKey: STATE_KEYS.pipelineData }, data);
 }
-async function sendTelegramAlert(ctx, config, message) {
-    const botToken = config.telegramBotToken;
-    const chatId = config.telegramChatId;
-    if (!botToken || !chatId)
-        return;
-    try {
-        await ctx.http.fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ chat_id: chatId, text: message, parse_mode: "HTML" }),
-        });
-    }
-    catch (err) {
-        ctx.logger.error("Telegram alert failed", { error: String(err) });
+// ---- Notification System ----
+function eventColor(event) {
+    switch (event) {
+        case "pipeline.complete": return 0x22c55e; // green
+        case "pipeline.stuck": return 0xf59e0b; // amber
+        case "verification.failed": return 0xef4444; // red
+        default: return 0x6b7280; // gray
     }
 }
-// ─── Auto-advance Pipeline ─────────────────────────────────────────────────
+function eventColorSlack(event) {
+    switch (event) {
+        case "pipeline.complete": return "#22c55e";
+        case "pipeline.stuck": return "#f59e0b";
+        case "verification.failed": return "#ef4444";
+        default: return "#6b7280";
+    }
+}
+/**
+ * Resolve the effective notification channel.
+ * If notificationChannel is configured and enabled, use it.
+ * Otherwise, fall back to legacy top-level telegramBotToken/telegramChatId.
+ */
+function resolveChannel(config) {
+    const ch = config.notificationChannel;
+    if (ch && ch.enabled) {
+        return { ...DEFAULT_NOTIFICATION_CHANNEL, ...ch };
+    }
+    // Legacy backward compat: top-level Telegram config
+    if (config.telegramBotToken && config.telegramChatId) {
+        return {
+            type: "telegram",
+            enabled: true,
+            telegramBotToken: config.telegramBotToken,
+            telegramChatId: config.telegramChatId,
+        };
+    }
+    return null;
+}
+async function sendViaWebhook(ctx, channel, payload) {
+    if (!channel.webhookUrl)
+        return;
+    const method = channel.webhookMethod ?? "POST";
+    const headers = {
+        "Content-Type": "application/json",
+        ...(channel.webhookHeaders ?? {}),
+    };
+    await ctx.http.fetch(channel.webhookUrl, {
+        method,
+        headers,
+        body: JSON.stringify(payload),
+    });
+}
+async function sendViaSlack(ctx, channel, payload) {
+    if (!channel.webhookUrl)
+        return;
+    const color = eventColorSlack(payload.event);
+    const body = {
+        attachments: [
+            {
+                color,
+                blocks: [
+                    {
+                        type: "header",
+                        text: { type: "plain_text", text: payload.title, emoji: true },
+                    },
+                    {
+                        type: "section",
+                        text: { type: "mrkdwn", text: payload.message },
+                    },
+                    ...(payload.issueUrl
+                        ? [
+                            {
+                                type: "section",
+                                text: { type: "mrkdwn", text: `<${payload.issueUrl}|View Issue>` },
+                            },
+                        ]
+                        : []),
+                    {
+                        type: "context",
+                        elements: [
+                            { type: "mrkdwn", text: `Event: \`${payload.event}\` | ${payload.timestamp}` },
+                        ],
+                    },
+                ],
+            },
+        ],
+    };
+    await ctx.http.fetch(channel.webhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+    });
+}
+async function sendViaDiscord(ctx, channel, payload) {
+    if (!channel.webhookUrl)
+        return;
+    const color = eventColor(payload.event);
+    const body = {
+        embeds: [
+            {
+                title: payload.title,
+                description: payload.message,
+                color,
+                fields: [
+                    ...(payload.issueId
+                        ? [{ name: "Issue", value: payload.issueId, inline: true }]
+                        : []),
+                    { name: "Event", value: payload.event, inline: true },
+                ],
+                timestamp: payload.timestamp,
+                ...(payload.issueUrl ? { url: payload.issueUrl } : {}),
+            },
+        ],
+    };
+    await ctx.http.fetch(channel.webhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+    });
+}
+async function sendViaTelegram(ctx, channel, payload) {
+    const botToken = channel.telegramBotToken;
+    const chatId = channel.telegramChatId;
+    if (!botToken || !chatId)
+        return;
+    const text = [
+        `<b>${payload.title}</b>`,
+        payload.message,
+        ...(payload.issueUrl ? [`<a href="${payload.issueUrl}">View Issue</a>`] : []),
+    ].join("\n");
+    await ctx.http.fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML" }),
+    });
+}
+async function sendViaEmail(ctx, channel, payload) {
+    if (!channel.emailEndpoint)
+        return;
+    const headers = {
+        "Content-Type": "application/json",
+        ...(channel.webhookHeaders ?? {}),
+    };
+    await ctx.http.fetch(channel.emailEndpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+            subject: payload.title,
+            body: payload.message,
+            event: payload.event,
+            issueId: payload.issueId,
+            issueUrl: payload.issueUrl,
+            timestamp: payload.timestamp,
+        }),
+    });
+}
+async function sendNotification(ctx, config, payload) {
+    const channel = resolveChannel(config);
+    if (!channel)
+        return;
+    // Prepend notification prefix to message
+    const prefix = config.notificationPrefix ?? DEFAULT_NOTIFICATION_PREFIX;
+    if (prefix) {
+        payload = { ...payload, message: `${prefix}: ${payload.message}` };
+    }
+    try {
+        switch (channel.type) {
+            case "webhook":
+                await sendViaWebhook(ctx, channel, payload);
+                break;
+            case "slack":
+                await sendViaSlack(ctx, channel, payload);
+                break;
+            case "discord":
+                await sendViaDiscord(ctx, channel, payload);
+                break;
+            case "telegram":
+                await sendViaTelegram(ctx, channel, payload);
+                break;
+            case "email":
+                await sendViaEmail(ctx, channel, payload);
+                break;
+            default:
+                ctx.logger.warn("Unknown notification channel type", { type: channel.type });
+        }
+    }
+    catch (err) {
+        ctx.logger.error("Notification send failed", { type: channel.type, error: String(err) });
+    }
+}
+// ---- Auto-advance Pipeline ----
 async function handleIssueCompleted(ctx, event) {
     const payload = event.payload;
     if (!payload)
@@ -65,10 +228,6 @@ async function handleIssueCompleted(ctx, event) {
     const issue = await ctx.issues.get(issueId, companyId);
     if (!issue)
         return;
-    // Content verification (applies to any content task)
-    if (isContentTask(issue.title)) {
-        await verifyContentTask(ctx, issue, companyId);
-    }
     // Pipeline advance: only for sub-tasks with a parent
     const parentId = issue.parentId;
     if (!parentId)
@@ -139,7 +298,7 @@ async function handleIssueCompleted(ctx, event) {
             startedAt: new Date().toISOString(),
             subTaskId: newIssue.id,
         });
-        // Comment on parent (no Telegram alert - this is normal progress)
+        // Comment on parent (no alert - this is normal progress)
         await ctx.issues.createComment(parentId, `Step ${completedStepIndex + 1} complete (${completedStep.agent} - ${completedStep.role}). Starting step ${nextStepIndex + 1} (${nextStep.agent} - ${nextStep.role}).`, companyId);
         // Update pipeline state
         await setPipelineData(ctx, parentId, {
@@ -157,7 +316,7 @@ async function handleIssueCompleted(ctx, event) {
         });
     }
     else {
-        // Pipeline complete - send ONE Telegram alert
+        // Pipeline complete
         await ctx.issues.createComment(parentId, `Pipeline complete! All ${pipelineData.steps.length} steps finished. Last step: ${completedStep.agent} (${completedStep.role}).`, companyId);
         await ctx.issues.update(parentId, { status: "done" }, companyId);
         await setPipelineData(ctx, parentId, {
@@ -169,65 +328,17 @@ async function handleIssueCompleted(ctx, event) {
         });
         const config = await getConfig(ctx);
         const parentIssue = await ctx.issues.get(parentId, companyId);
-        await sendTelegramAlert(ctx, config, `<b>Pipeline Complete</b>\n${parentIssue?.title ?? parentId}\nAll ${pipelineData.steps.length} steps finished.`);
+        await sendNotification(ctx, config, {
+            event: "pipeline.complete",
+            title: "Pipeline Complete",
+            message: `${parentIssue?.title ?? parentId} - All ${pipelineData.steps.length} steps finished.`,
+            issueId: parentId,
+            timestamp: new Date().toISOString(),
+        });
         ctx.logger.info("Pipeline completed", { parentId });
     }
 }
-// ─── Content Verification ───────────────────────────────────────────────────
-async function verifyContentTask(ctx, issue, companyId) {
-    const config = await getConfig(ctx);
-    if (!config.siteApiToken)
-        return;
-    let postId = extractPostId(issue.title);
-    if (!postId && issue.description) {
-        postId = extractPostId(issue.description);
-    }
-    if (!postId) {
-        const comments = await ctx.issues.listComments(issue.id, companyId);
-        for (const comment of comments) {
-            postId = extractPostId(comment.body);
-            if (postId)
-                break;
-        }
-    }
-    if (!postId)
-        return;
-    try {
-        const apiUrl = config.siteApiUrl || DEFAULT_CONFIG.siteApiUrl;
-        const response = await ctx.http.fetch(`${apiUrl}/api/v1/posts/${postId}`, {
-            method: "GET",
-            headers: { Authorization: `Bearer ${config.siteApiToken}` },
-        });
-        if (!response.ok)
-            return;
-        const post = (await response.json());
-        const content = String(post.content ?? post.body ?? "");
-        const wordCount = content.split(/\s+/).filter(Boolean).length;
-        const hasImages = /<img\b/i.test(content) || /!\[/.test(content);
-        const hashKey = { scopeKind: "issue", scopeId: issue.id, stateKey: STATE_KEYS.contentHash };
-        const previousHash = (await ctx.state.get(hashKey));
-        const currentHash = `wc:${wordCount}|img:${hasImages}`;
-        const failures = [];
-        if (wordCount < 300)
-            failures.push(`Word count too low: ${wordCount} (minimum 300)`);
-        if (!hasImages)
-            failures.push("No images found (need <img> or ![] markdown images)");
-        if (previousHash === currentHash && failures.length > 0) {
-            failures.push("Content has not changed since last check");
-        }
-        if (failures.length > 0) {
-            await ctx.issues.update(issue.id, { status: "todo" }, companyId);
-            await ctx.issues.createComment(issue.id, `Content verification FAILED for post ${postId}:\n\n${failures.map((f) => `- ${f}`).join("\n")}\n\nReopening task.`, companyId);
-            // Exception alert: verification failed
-            await sendTelegramAlert(ctx, config, `<b>Verification Failed</b>\n${issue.title}\n${failures.join(", ")}`);
-        }
-        await ctx.state.set(hashKey, currentHash);
-    }
-    catch (err) {
-        ctx.logger.error("Content verification error", { issueId: issue.id, postId, error: String(err) });
-    }
-}
-// ─── Stuck Detection Job ────────────────────────────────────────────────────
+// ---- Stuck Detection Job ----
 async function runStuckDetection(ctx, _job) {
     const config = await getConfig(ctx);
     const companies = await ctx.companies.list({ limit: 10, offset: 0 });
@@ -285,8 +396,13 @@ async function runStuckDetection(ctx, _job) {
             });
             if (filtered.length > 0) {
                 const id = (i) => i.identifier ?? i.id.slice(0, 8);
-                const lines = filtered.map((e) => `- <b>${id(e.issue)}</b>: ${e.issue.title} (${e.reason})`);
-                await sendTelegramAlert(ctx, config, `<b>Stuck Issues</b>\n\n${lines.join("\n")}`);
+                const lines = filtered.map((e) => `${id(e.issue)}: ${e.issue.title} (${e.reason})`);
+                await sendNotification(ctx, config, {
+                    event: "pipeline.stuck",
+                    title: "Stuck Issues",
+                    message: lines.join("\n"),
+                    timestamp: now,
+                });
                 for (const entry of filtered) {
                     alertHistory[entry.issue.id] = now;
                 }
@@ -295,7 +411,7 @@ async function runStuckDetection(ctx, _job) {
         }
     }
 }
-// ─── Data Handlers (for UI) ─────────────────────────────────────────────────
+// ---- Data Handlers (for UI) ----
 async function registerDataHandlers(ctx) {
     // Pipeline data for a specific issue (detail tab)
     ctx.data.register("issue-pipeline", async (params) => {
@@ -324,11 +440,11 @@ async function registerDataHandlers(ctx) {
             if (!issue.parentId) {
                 const data = await getPipelineData(ctx, issue.id);
                 if (data && data.steps.length > 0 && issue.status !== "done") {
-                    const id = issue.identifier ?? issue.id.slice(0, 8);
+                    const ident = issue.identifier ?? issue.id.slice(0, 8);
                     activePipelines.push({
                         parentId: issue.id,
                         parentTitle: issue.title,
-                        identifier: id,
+                        identifier: ident,
                         steps: data.steps.map((s) => ({ agent: s.agent, role: s.role })),
                         currentStep: data.currentStep,
                         totalSteps: data.steps.length,
@@ -340,15 +456,15 @@ async function registerDataHandlers(ctx) {
             if (issue.status === "todo" && issue.assigneeAgentId) {
                 const age = minutesSince(issue.updatedAt);
                 if (age > (config.stuckTodoMinutes ?? 30)) {
-                    const id = issue.identifier ?? issue.id.slice(0, 8);
-                    stuckIssues.push({ id: issue.id, title: issue.title, identifier: id, status: "todo", minutesStale: Math.round(age) });
+                    const ident = issue.identifier ?? issue.id.slice(0, 8);
+                    stuckIssues.push({ id: issue.id, title: issue.title, identifier: ident, status: "todo", minutesStale: Math.round(age) });
                 }
             }
             else if (issue.status === "in_progress") {
                 const age = minutesSince(issue.updatedAt);
                 if (age > (config.stuckInProgressMinutes ?? 60)) {
-                    const id = issue.identifier ?? issue.id.slice(0, 8);
-                    stuckIssues.push({ id: issue.id, title: issue.title, identifier: id, status: "in_progress", minutesStale: Math.round(age) });
+                    const ident = issue.identifier ?? issue.id.slice(0, 8);
+                    stuckIssues.push({ id: issue.id, title: issue.title, identifier: ident, status: "in_progress", minutesStale: Math.round(age) });
                 }
             }
         }
@@ -367,7 +483,7 @@ async function registerDataHandlers(ctx) {
         return await getConfig(ctx);
     });
 }
-// ─── Action Handlers (for UI) ───────────────────────────────────────────────
+// ---- Action Handlers (for UI) ----
 async function registerActionHandlers(ctx) {
     // Save pipeline on an issue
     ctx.actions.register("save-pipeline", async (params) => {
@@ -467,11 +583,22 @@ async function registerActionHandlers(ctx) {
         await ctx.issues.createComment(issueId, `Pipeline started. Step 1/${data.steps.length}: ${firstStep.agent} (${firstStep.role}).`, companyId);
         return { ok: true, firstIssueId: newIssue.id };
     });
+    // Test notification - sends a test payload through the configured channel
+    ctx.actions.register("test-notification", async (_params) => {
+        const config = await getConfig(ctx);
+        await sendNotification(ctx, config, {
+            event: "pipeline.complete",
+            title: "Test Notification",
+            message: "This is a test notification from Pipeline Controller. If you see this, notifications are working.",
+            timestamp: new Date().toISOString(),
+        });
+        return { ok: true };
+    });
 }
-// ─── Plugin Definition ──────────────────────────────────────────────────────
+// ---- Plugin Definition ----
 const plugin = definePlugin({
     async setup(ctx) {
-        ctx.logger.info("Pipeline Controller v2 setup starting", { pluginId: PLUGIN_ID });
+        ctx.logger.info("Pipeline Controller v4 setup starting", { pluginId: PLUGIN_ID });
         // Event: auto-advance on issue completion
         ctx.events.on("issue.updated", async (event) => {
             try {
@@ -494,7 +621,7 @@ const plugin = definePlugin({
         // Data + Action handlers for UI
         await registerDataHandlers(ctx);
         await registerActionHandlers(ctx);
-        ctx.logger.info("Pipeline Controller v2 setup complete");
+        ctx.logger.info("Pipeline Controller v4 setup complete");
     },
     async onHealth() {
         return { status: "ok", message: "Pipeline Controller running" };

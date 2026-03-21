@@ -1,5 +1,5 @@
 export const PLUGIN_ID = "pipeline-controller";
-export const PLUGIN_VERSION = "0.2.0";
+export const PLUGIN_VERSION = "0.4.0";
 
 export const SLOT_IDS = {
   dashboardWidget: "pipeline-dashboard-widget",
@@ -22,44 +22,65 @@ export const STATE_KEYS = {
   pipelineData: "pipeline-data",
   /** Alert history. Scope: instance */
   alertHistory: "alert-history",
-  /** Content hash tracking. Scope: issue */
-  contentHash: "content-hash",
   /** Saved pipeline templates. Scope: instance */
   templates: "pipeline-templates",
 } as const;
 
-/** Content task title patterns that trigger verify-on-done */
-export const CONTENT_PATTERNS = [
-  /\bexpand\b/i,
-  /\bimage\b/i,
-  /\bpost\b/i,
-  /\barticle\b/i,
-];
+// ---- Notification Channel Types ----
 
-/** Pattern to extract post IDs from titles/comments */
-export const POST_ID_PATTERNS = [
-  /post[- _]?id[:\s]+([a-f0-9-]+)/i,
-  /post[:\s]+(\d+)/i,
-  /\/posts\/([a-f0-9-]+)/i,
-  /\/posts\/(\d+)/i,
-];
+export type NotificationChannelType = "webhook" | "slack" | "discord" | "telegram" | "email";
+
+export interface NotificationChannel {
+  type: NotificationChannelType;
+  enabled: boolean;
+  webhookUrl?: string;
+  webhookMethod?: "POST" | "PUT";
+  webhookHeaders?: Record<string, string>;
+  telegramBotToken?: string;
+  telegramChatId?: string;
+  emailEndpoint?: string;
+  payloadTemplate?: string;
+}
+
+export interface NotificationPayload {
+  event: "pipeline.stuck" | "pipeline.complete" | "verification.failed";
+  title: string;
+  message: string;
+  issueId?: string;
+  issueUrl?: string;
+  timestamp: string;
+}
+
+export const DEFAULT_NOTIFICATION_CHANNEL: NotificationChannel = {
+  type: "webhook",
+  enabled: false,
+  webhookMethod: "POST",
+};
+
+// ---- Plugin Config ----
+
+export const DEFAULT_NOTIFICATION_PREFIX = "\u2699\ufe0f Pipeline Controller";
 
 export const DEFAULT_CONFIG = {
-  siteApiUrl: "https://www.labattsimon.com",
-  siteApiToken: "",
+  /** @deprecated Use notificationChannel instead */
   telegramBotToken: "",
+  /** @deprecated Use notificationChannel instead */
   telegramChatId: "",
   stuckTodoMinutes: 30,
   stuckInProgressMinutes: 60,
+  notificationChannel: DEFAULT_NOTIFICATION_CHANNEL,
+  notificationPrefix: DEFAULT_NOTIFICATION_PREFIX,
 } as const;
 
 export type PipelineControllerConfig = {
-  siteApiUrl?: string;
-  siteApiToken?: string;
+  /** @deprecated Use notificationChannel instead. Kept for backward compat. */
   telegramBotToken?: string;
+  /** @deprecated Use notificationChannel instead. Kept for backward compat. */
   telegramChatId?: string;
   stuckTodoMinutes?: number;
   stuckInProgressMinutes?: number;
+  notificationChannel?: NotificationChannel;
+  notificationPrefix?: string;
 };
 
 export interface PipelineStep {

@@ -24,28 +24,30 @@ interface PipelineStatusData {
   stuckIssues: StuckIssue[];
 }
 
+/* ── Theme-aware styles using CSS variables ── */
 const css = {
-  container: { fontFamily: "system-ui, sans-serif", fontSize: "13px", display: "grid", gap: "12px" } as React.CSSProperties,
-  section: { borderBottom: "1px solid #e5e7eb", paddingBottom: "10px" } as React.CSSProperties,
-  sectionTitle: { fontSize: "13px", fontWeight: 600, marginBottom: "6px", display: "flex", alignItems: "center", gap: "6px" } as React.CSSProperties,
-  pipeline: { marginBottom: "8px", padding: "6px 8px", borderRadius: "6px", background: "#f9fafb" } as React.CSSProperties,
-  pipelineTitle: { fontWeight: 500, fontSize: "12px", marginBottom: "4px" } as React.CSSProperties,
+  container: { fontFamily: "system-ui, sans-serif", fontSize: "13px", display: "grid", gap: "12px", color: "var(--foreground)" } as React.CSSProperties,
+  section: { borderBottom: "1px solid var(--border)", paddingBottom: "10px" } as React.CSSProperties,
+  sectionTitle: { fontSize: "13px", fontWeight: 600, marginBottom: "6px", display: "flex", alignItems: "center", gap: "6px", color: "var(--foreground)" } as React.CSSProperties,
+  pipeline: { marginBottom: "8px", padding: "6px 8px", borderRadius: "6px", background: "var(--muted)" } as React.CSSProperties,
+  pipelineTitle: { fontWeight: 500, fontSize: "12px", marginBottom: "4px", color: "var(--foreground)" } as React.CSSProperties,
   steps: { display: "flex", gap: "2px", flexWrap: "wrap" as const, alignItems: "center" } as React.CSSProperties,
   step: (isCompleted: boolean, isCurrent: boolean) => ({
     padding: "2px 6px",
     borderRadius: "4px",
     fontSize: "11px",
-    background: isCompleted ? "#dcfce7" : isCurrent ? "#dbeafe" : "#f3f4f6",
-    color: isCompleted ? "#166534" : isCurrent ? "#1e40af" : "#9ca3af",
+    background: isCompleted ? "var(--accent)" : isCurrent ? "var(--accent)" : "var(--muted)",
+    color: isCompleted ? "var(--accent-foreground)" : isCurrent ? "var(--accent-foreground)" : "var(--muted-foreground)",
     fontWeight: isCurrent ? 600 : 400,
   }) as React.CSSProperties,
-  arrow: { color: "#d1d5db", fontSize: "10px" } as React.CSSProperties,
-  stuckItem: { padding: "4px 8px", borderRadius: "4px", background: "#fef2f2", border: "1px solid #fecaca", marginBottom: "3px", display: "flex", justifyContent: "space-between", fontSize: "12px" } as React.CSSProperties,
-  stuckTitle: { color: "#991b1b", fontWeight: 500 } as React.CSSProperties,
-  stuckAge: { color: "#dc2626", fontSize: "11px" } as React.CSSProperties,
-  badge: (color: string) => ({ display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: "16px", height: "16px", borderRadius: "8px", fontSize: "10px", fontWeight: 600, color: "#fff", background: color, padding: "0 4px" }) as React.CSSProperties,
-  empty: { color: "#9ca3af", fontSize: "12px", fontStyle: "italic" as const } as React.CSSProperties,
-  refreshBtn: { padding: "3px 10px", fontSize: "11px", borderRadius: "4px", border: "1px solid #d1d5db", background: "#fff", cursor: "pointer" } as React.CSSProperties,
+  arrow: { color: "var(--muted-foreground)", fontSize: "10px" } as React.CSSProperties,
+  stuckItem: { padding: "4px 8px", borderRadius: "4px", background: "var(--destructive)", border: "1px solid var(--border)", marginBottom: "3px", display: "flex", justifyContent: "space-between", fontSize: "12px" } as React.CSSProperties,
+  stuckTitle: { color: "var(--destructive-foreground)", fontWeight: 500 } as React.CSSProperties,
+  stuckAge: { color: "var(--destructive-foreground)", fontSize: "11px" } as React.CSSProperties,
+  badge: (color: string) => ({ display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: "16px", height: "16px", borderRadius: "8px", fontSize: "10px", fontWeight: 600, color: "var(--primary-foreground)", background: "var(--primary)", padding: "0 4px" }) as React.CSSProperties,
+  badgeDanger: { display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: "16px", height: "16px", borderRadius: "8px", fontSize: "10px", fontWeight: 600, color: "var(--destructive-foreground)", background: "var(--destructive)", padding: "0 4px" } as React.CSSProperties,
+  empty: { color: "var(--muted-foreground)", fontSize: "12px", fontStyle: "italic" as const } as React.CSSProperties,
+  refreshBtn: { padding: "3px 10px", fontSize: "11px", borderRadius: "4px", border: "1px solid var(--border)", background: "var(--secondary)", color: "var(--secondary-foreground)", cursor: "pointer" } as React.CSSProperties,
 };
 
 export function PipelineDashboardWidget({ context }: PluginWidgetProps) {
@@ -91,7 +93,7 @@ export function PipelineDashboardWidget({ context }: PluginWidgetProps) {
       {data.stuckIssues.length > 0 && (
         <div>
           <div style={css.sectionTitle}>
-            Stuck <span style={css.badge("#ef4444")}>{data.stuckIssues.length}</span>
+            Stuck <span style={css.badgeDanger}>{data.stuckIssues.length}</span>
           </div>
           {data.stuckIssues.slice(0, 5).map((s) => (
             <div key={s.id} style={css.stuckItem}>
