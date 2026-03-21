@@ -1,18 +1,27 @@
 export const PLUGIN_ID = "pipeline-controller";
-export const PLUGIN_VERSION = "0.1.0";
+export const PLUGIN_VERSION = "0.2.0";
 export const SLOT_IDS = {
     dashboardWidget: "pipeline-dashboard-widget",
+    issueDetailTab: "pipeline-issue-detail-tab",
+    settingsPage: "pipeline-settings-page",
 };
 export const EXPORT_NAMES = {
     dashboardWidget: "PipelineDashboardWidget",
+    issueDetailTab: "PipelineIssueDetailTab",
+    settingsPage: "PipelineSettingsPage",
 };
 export const JOB_KEYS = {
     stuckDetection: "stuck-detection",
 };
 export const STATE_KEYS = {
-    pipelineProgress: "pipeline-progress",
+    /** Per-issue pipeline definition + progress. Scope: issue */
+    pipelineData: "pipeline-data",
+    /** Alert history. Scope: instance */
     alertHistory: "alert-history",
+    /** Content hash tracking. Scope: issue */
     contentHash: "content-hash",
+    /** Saved pipeline templates. Scope: instance */
+    templates: "pipeline-templates",
 };
 /** Content task title patterns that trigger verify-on-done */
 export const CONTENT_PATTERNS = [
