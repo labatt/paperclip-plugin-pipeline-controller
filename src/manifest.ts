@@ -1,6 +1,7 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import {
   DEFAULT_CONFIG,
+  DEFAULT_ERROR_POLICY,
   EXPORT_NAMES,
   JOB_KEYS,
   PLUGIN_ID,
@@ -13,7 +14,7 @@ const manifest: PaperclipPluginManifestV1 = {
   apiVersion: 1,
   version: PLUGIN_VERSION,
   displayName: "Pipeline Controller",
-  description: "Automates multi-agent pipeline handoffs with visual pipeline editor, stuck detection, and notifications. Content verification is handled by separate verifier plugins.",
+  description: "Automates multi-agent pipeline handoffs with visual pipeline editor, stuck detection, error handling (retry/skip/escalate), API action handlers, and notifications. Content verification is handled by separate verifier plugins.",
   author: "Forge",
   categories: ["automation", "ui"],
   capabilities: [
@@ -70,6 +71,31 @@ const manifest: PaperclipPluginManifestV1 = {
         default: DEFAULT_CONFIG.notificationPrefix,
         description: "Short label prepended to every alert so recipients know the source (e.g. a project name). Max 255 characters.",
         maxLength: 255,
+      },
+      errorPolicy: {
+        type: "object",
+        title: "Error Handling Policy",
+        description: "Configure how the pipeline handles failed agent runs. Each step can also override these defaults.",
+        properties: {
+          defaultPolicy: {
+            type: "string",
+            title: "Default Error Policy",
+            enum: ["retry", "skip", "escalate"],
+            default: DEFAULT_ERROR_POLICY.defaultPolicy,
+            description: "What to do when an agent run fails. 'retry' re-creates the sub-task (up to maxRetries). 'skip' moves to the next step. 'escalate' blocks the pipeline and reassigns to the overseer.",
+          },
+          maxRetries: {
+            type: "number",
+            title: "Max Retries",
+            default: DEFAULT_ERROR_POLICY.maxRetries,
+            description: "Maximum number of retry attempts when policy is 'retry'. After exhausting retries, falls back to escalation.",
+          },
+          errorOverseerAgentId: {
+            type: "string",
+            title: "Error Overseer Agent ID",
+            description: "Agent to reassign the issue to when a step fails and policy is 'escalate'. If not set, the pipeline is blocked for manual intervention.",
+          },
+        },
       },
       notificationChannel: {
         type: "object",

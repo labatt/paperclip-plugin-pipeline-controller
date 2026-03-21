@@ -1,5 +1,5 @@
 export declare const PLUGIN_ID = "pipeline-controller";
-export declare const PLUGIN_VERSION = "0.5.0";
+export declare const PLUGIN_VERSION = "0.6.0";
 export declare const SLOT_IDS: {
     readonly dashboardWidget: "pipeline-dashboard-widget";
     readonly issueDetailTab: "pipeline-issue-detail-tab";
@@ -22,6 +22,8 @@ export declare const STATE_KEYS: {
     readonly templates: "pipeline-templates";
     /** User-edited notification prefix override. Scope: instance */
     readonly notificationPrefixOverride: "notification-prefix-override";
+    /** Per-issue retry counter. Scope: issue */
+    readonly retryCounter: "retry-counter";
 };
 export type NotificationChannelType = "webhook" | "slack" | "discord" | "telegram" | "email";
 export interface NotificationChannel {
@@ -36,13 +38,23 @@ export interface NotificationChannel {
     payloadTemplate?: string;
 }
 export interface NotificationPayload {
-    event: "pipeline.stuck" | "pipeline.complete" | "verification.failed";
+    event: "pipeline.stuck" | "pipeline.complete" | "verification.failed" | "run.failed";
     title: string;
     message: string;
     issueId?: string;
     issueUrl?: string;
     timestamp: string;
 }
+export type ErrorPolicy = "retry" | "skip" | "escalate";
+export interface ErrorPolicyConfig {
+    /** Default error policy for all pipeline steps. Defaults to "escalate". */
+    defaultPolicy: ErrorPolicy;
+    /** Max retries when policy is "retry". Defaults to 2. */
+    maxRetries: number;
+    /** Agent ID to escalate to on failure. Falls back to parent issue creator if not set. */
+    errorOverseerAgentId?: string;
+}
+export declare const DEFAULT_ERROR_POLICY: ErrorPolicyConfig;
 export declare const DEFAULT_NOTIFICATION_CHANNEL: NotificationChannel;
 export declare const DEFAULT_NOTIFICATION_PREFIX = "\u2699\uFE0F Pipeline Controller";
 export declare const DEFAULT_CONFIG: {
@@ -64,11 +76,17 @@ export type PipelineControllerConfig = {
     stuckInProgressMinutes?: number;
     notificationChannel?: NotificationChannel;
     notificationPrefix?: string;
+    /** Error handling policy for failed agent runs */
+    errorPolicy?: ErrorPolicyConfig;
 };
 export interface PipelineStep {
     agent: string;
     agentId: string;
     role: string;
+    /** Per-step error policy override. Falls back to global errorPolicy config. */
+    errorPolicy?: ErrorPolicy;
+    /** Per-step max retries override. Falls back to global errorPolicy.maxRetries. */
+    maxRetries?: number;
 }
 /** Stored in ctx.state per issue (scopeKind: "issue", stateKey: "pipeline-data") */
 export interface PipelineData {
@@ -78,10 +96,14 @@ export interface PipelineData {
     stepHistory: Array<{
         stepIndex: number;
         agent: string;
-        status: "done" | "active" | "pending";
+        status: "done" | "active" | "pending" | "failed" | "skipped";
         startedAt?: string;
         completedAt?: string;
         subTaskId?: string;
+        /** Number of retries attempted for this step */
+        retryCount?: number;
+        /** Last failure reason */
+        failureReason?: string;
     }>;
     startedAt: string;
     lastAdvancedAt: string;

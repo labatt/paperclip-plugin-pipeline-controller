@@ -1,6 +1,6 @@
 {
   "name": "@paperclipai/plugin-pipeline-controller",
-  "version": "0.3.0",
+  "version": "0.6.0",
   "description": "Pipeline workflow automation plugin for Paperclip - manages agent handoffs, content verification, and stuck detection",
   "type": "module",
   "private": true,
