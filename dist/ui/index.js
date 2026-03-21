@@ -427,9 +427,14 @@ function PipelineSettingsPage({ context }) {
   const { data: templatesData, refresh: refreshTemplates } = usePluginData3("pipeline-templates");
   const deleteTemplate = usePluginAction2("delete-template");
   const testNotification = usePluginAction2("test-notification");
+  const updatePrefix = usePluginAction2("update-prefix");
   const [deleting, setDeleting] = useState2(null);
   const [testing, setTesting] = useState2(false);
   const [testResult, setTestResult] = useState2(null);
+  const [prefixValue, setPrefixValue] = useState2(null);
+  const [prefixSaving, setPrefixSaving] = useState2(false);
+  const [prefixSaved, setPrefixSaved] = useState2(false);
+  const [payloadRefOpen, setPayloadRefOpen] = useState2(false);
   const config = configData ?? {};
   const channel = config.notificationChannel ?? {};
   const templates = templatesData?.templates ?? [];
@@ -444,6 +449,18 @@ function PipelineSettingsPage({ context }) {
     }
     setDeleting(null);
   }, [deleteTemplate, refreshTemplates]);
+  const handlePrefixSave = useCallback2(async () => {
+    if (prefixValue == null) return;
+    setPrefixSaving(true);
+    setPrefixSaved(false);
+    try {
+      await updatePrefix({ value: prefixValue });
+      setPrefixSaved(true);
+      setTimeout(() => setPrefixSaved(false), 2e3);
+    } catch {
+    }
+    setPrefixSaving(false);
+  }, [updatePrefix, prefixValue]);
   const handleTestNotification = useCallback2(async () => {
     setTesting(true);
     setTestResult(null);
@@ -506,8 +523,30 @@ function PipelineSettingsPage({ context }) {
       ] }),
       /* @__PURE__ */ jsxs3("div", { style: css3.field, children: [
         /* @__PURE__ */ jsx3("span", { style: css3.label, children: "Notification Prefix" }),
-        /* @__PURE__ */ jsx3("div", { style: css3.fieldValue, children: config.notificationPrefix || "\u2699\uFE0F Pipeline Controller" }),
-        /* @__PURE__ */ jsx3("div", { style: css3.hint, children: "Short label prepended to every alert so recipients can identify the source at a glance." })
+        /* @__PURE__ */ jsxs3("div", { style: css3.row, children: [
+          /* @__PURE__ */ jsx3(
+            "input",
+            {
+              style: css3.input,
+              type: "text",
+              maxLength: 255,
+              value: prefixValue ?? config.notificationPrefix ?? "\u2699\uFE0F Pipeline Controller",
+              onChange: (e) => setPrefixValue(e.target.value),
+              onBlur: handlePrefixSave,
+              placeholder: "\\u2699\\ufe0f Pipeline Controller"
+            }
+          ),
+          /* @__PURE__ */ jsx3(
+            "button",
+            {
+              style: css3.btn("secondary"),
+              onClick: handlePrefixSave,
+              disabled: prefixSaving || prefixValue == null,
+              children: prefixSaving ? "Saving..." : prefixSaved ? "Saved!" : "Save"
+            }
+          )
+        ] }),
+        /* @__PURE__ */ jsx3("div", { style: css3.hint, children: "Short label prepended to every alert so recipients can identify the source at a glance. Max 255 characters." })
       ] }),
       /* @__PURE__ */ jsxs3("div", { style: { marginTop: "12px", ...css3.row }, children: [
         /* @__PURE__ */ jsx3(
@@ -520,6 +559,111 @@ function PipelineSettingsPage({ context }) {
           }
         ),
         testResult && /* @__PURE__ */ jsx3("div", { style: testResult.ok ? css3.successMsg : css3.errorMsg, children: testResult.msg })
+      ] })
+    ] }),
+    /* @__PURE__ */ jsxs3("div", { style: css3.section, children: [
+      /* @__PURE__ */ jsxs3(
+        "div",
+        {
+          style: { ...css3.sectionTitle, cursor: "pointer", userSelect: "none" },
+          onClick: () => setPayloadRefOpen(!payloadRefOpen),
+          children: [
+            payloadRefOpen ? "\u25BE" : "\u25B8",
+            " Payload Reference"
+          ]
+        }
+      ),
+      /* @__PURE__ */ jsx3("div", { style: css3.sectionHelp, children: "Exact JSON payloads sent for each notification event, and how each channel renders them." }),
+      payloadRefOpen && /* @__PURE__ */ jsxs3("div", { style: { fontSize: "12px", color: "var(--muted-foreground)", lineHeight: "1.6" }, children: [
+        /* @__PURE__ */ jsxs3("div", { style: { marginBottom: "12px" }, children: [
+          /* @__PURE__ */ jsx3("strong", { style: { color: "var(--foreground)" }, children: "Base payload (all channels):" }),
+          /* @__PURE__ */ jsx3("pre", { style: {
+            background: "var(--muted)",
+            padding: "10px",
+            borderRadius: "6px",
+            overflow: "auto",
+            fontSize: "11px",
+            lineHeight: "1.4",
+            marginTop: "4px"
+          }, children: `{
+  "event": "pipeline.stuck | pipeline.complete | pipeline.step_advanced | verification.failed",
+  "prefix": "\u2699\uFE0F Pipeline Alert",
+  "title": "FAI-84 stuck for 45 minutes",
+  "message": "Full description of what happened",
+  "issueIdentifier": "FAI-84",
+  "issueId": "uuid",
+  "issueUrl": "https://paperclip.example.com/issues/FAI-84",
+  "timestamp": "2026-03-21T16:40:00Z",
+  "severity": "high | medium | low"
+}` })
+        ] }),
+        /* @__PURE__ */ jsxs3("div", { style: { marginBottom: "12px" }, children: [
+          /* @__PURE__ */ jsx3("strong", { style: { color: "var(--foreground)" }, children: "Webhook (generic):" }),
+          /* @__PURE__ */ jsxs3("div", { children: [
+            "Raw JSON POST to the configured URL. The base payload above is sent as-is in the request body with ",
+            /* @__PURE__ */ jsx3("code", { children: "Content-Type: application/json" }),
+            ". Custom headers are included if configured."
+          ] })
+        ] }),
+        /* @__PURE__ */ jsxs3("div", { style: { marginBottom: "12px" }, children: [
+          /* @__PURE__ */ jsx3("strong", { style: { color: "var(--foreground)" }, children: "Slack:" }),
+          /* @__PURE__ */ jsx3("div", { children: "Formatted as Slack Block Kit attachments with color-coded severity sidebar:" }),
+          /* @__PURE__ */ jsxs3("ul", { style: { margin: "4px 0", paddingLeft: "16px" }, children: [
+            /* @__PURE__ */ jsx3("li", { children: "Green (#22c55e) for pipeline.complete" }),
+            /* @__PURE__ */ jsx3("li", { children: "Amber (#f59e0b) for pipeline.stuck" }),
+            /* @__PURE__ */ jsx3("li", { children: "Red (#ef4444) for verification.failed" })
+          ] }),
+          /* @__PURE__ */ jsx3("div", { children: "Includes header block (title), section block (message), optional link block, and context block (event type + timestamp)." })
+        ] }),
+        /* @__PURE__ */ jsxs3("div", { style: { marginBottom: "12px" }, children: [
+          /* @__PURE__ */ jsx3("strong", { style: { color: "var(--foreground)" }, children: "Discord:" }),
+          /* @__PURE__ */ jsx3("div", { children: "Formatted as Discord embed with color-coded border:" }),
+          /* @__PURE__ */ jsxs3("ul", { style: { margin: "4px 0", paddingLeft: "16px" }, children: [
+            /* @__PURE__ */ jsx3("li", { children: "Green (0x22c55e) for pipeline.complete" }),
+            /* @__PURE__ */ jsx3("li", { children: "Amber (0xf59e0b) for pipeline.stuck" }),
+            /* @__PURE__ */ jsx3("li", { children: "Red (0xef4444) for verification.failed" })
+          ] }),
+          /* @__PURE__ */ jsx3("div", { children: "Includes embed title, description (message), inline fields (Issue ID, Event type), timestamp, and optional URL linking to the issue." })
+        ] }),
+        /* @__PURE__ */ jsxs3("div", { style: { marginBottom: "12px" }, children: [
+          /* @__PURE__ */ jsx3("strong", { style: { color: "var(--foreground)" }, children: "Telegram:" }),
+          /* @__PURE__ */ jsxs3("div", { children: [
+            "Sent via ",
+            /* @__PURE__ */ jsx3("code", { children: "sendMessage" }),
+            " API with ",
+            /* @__PURE__ */ jsx3("code", { children: 'parse_mode: "HTML"' }),
+            ". Format:"
+          ] }),
+          /* @__PURE__ */ jsx3("pre", { style: {
+            background: "var(--muted)",
+            padding: "10px",
+            borderRadius: "6px",
+            overflow: "auto",
+            fontSize: "11px",
+            lineHeight: "1.4",
+            marginTop: "4px"
+          }, children: `<b>FAI-84 stuck for 45 minutes</b>
+\u2699\uFE0F Pipeline Alert: Full description of what happened
+<a href="https://paperclip.example.com/issues/FAI-84">View Issue</a>` })
+        ] }),
+        /* @__PURE__ */ jsxs3("div", { children: [
+          /* @__PURE__ */ jsx3("strong", { style: { color: "var(--foreground)" }, children: "Email:" }),
+          /* @__PURE__ */ jsxs3("div", { children: [
+            "JSON POST to the configured email API endpoint with fields: ",
+            /* @__PURE__ */ jsx3("code", { children: "subject" }),
+            " (title), ",
+            /* @__PURE__ */ jsx3("code", { children: "body" }),
+            " (message), ",
+            /* @__PURE__ */ jsx3("code", { children: "event" }),
+            ", ",
+            /* @__PURE__ */ jsx3("code", { children: "issueId" }),
+            ", ",
+            /* @__PURE__ */ jsx3("code", { children: "issueUrl" }),
+            ", ",
+            /* @__PURE__ */ jsx3("code", { children: "timestamp" }),
+            ". Custom headers are included if configured."
+          ] })
+        ] })
       ] })
     ] }),
     /* @__PURE__ */ jsxs3("div", { style: css3.section, children: [

@@ -1,5 +1,5 @@
 export declare const PLUGIN_ID = "pipeline-controller";
-export declare const PLUGIN_VERSION = "0.4.0";
+export declare const PLUGIN_VERSION = "0.5.0";
 export declare const SLOT_IDS: {
     readonly dashboardWidget: "pipeline-dashboard-widget";
     readonly issueDetailTab: "pipeline-issue-detail-tab";
@@ -20,6 +20,8 @@ export declare const STATE_KEYS: {
     readonly alertHistory: "alert-history";
     /** Saved pipeline templates. Scope: instance */
     readonly templates: "pipeline-templates";
+    /** User-edited notification prefix override. Scope: instance */
+    readonly notificationPrefixOverride: "notification-prefix-override";
 };
 export type NotificationChannelType = "webhook" | "slack" | "discord" | "telegram" | "email";
 export interface NotificationChannel {

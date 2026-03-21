@@ -105,6 +105,34 @@ After installation, go to **Settings → Plugins → Pipeline Controller** to co
 | Stuck Todo Threshold | 30 min | Flag tasks in `todo` with no activity after this long |
 | Stuck In-Progress Threshold | 60 min | Flag tasks `in_progress` with no updates after this long |
 
+## Webhook Payload
+
+Every notification sends the following base JSON payload:
+
+```json
+{
+  "event": "pipeline.stuck | pipeline.complete | pipeline.step_advanced | verification.failed",
+  "prefix": "⚙️ Pipeline Alert",
+  "title": "FAI-84 stuck for 45 minutes",
+  "message": "Full description of what happened",
+  "issueIdentifier": "FAI-84",
+  "issueId": "uuid",
+  "issueUrl": "https://paperclip.example.com/issues/FAI-84",
+  "timestamp": "2026-03-21T16:40:00Z",
+  "severity": "high | medium | low"
+}
+```
+
+### Channel-specific rendering
+
+| Channel | Format |
+|---------|--------|
+| **Webhook** | Raw JSON POST to the URL with `Content-Type: application/json`. Custom headers included if configured. |
+| **Slack** | Block Kit attachments with color-coded severity sidebar. Green (#22c55e) for complete, amber (#f59e0b) for stuck, red (#ef4444) for verification failures. Includes header, section, link, and context blocks. |
+| **Discord** | Embed with color-coded border (same color scheme as Slack). Includes title, description, inline Issue/Event fields, timestamp, and optional issue URL. |
+| **Telegram** | HTML-formatted message via `sendMessage` API. Bold title, prefixed message body, and "View Issue" hyperlink. |
+| **Email** | JSON POST to the email API endpoint with `subject`, `body`, `event`, `issueId`, `issueUrl`, and `timestamp` fields. Custom headers included if configured. |
+
 ## Usage
 
 1. Open any Paperclip issue

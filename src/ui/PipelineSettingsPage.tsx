@@ -81,10 +81,15 @@ export function PipelineSettingsPage({ context }: PluginSettingsPageProps) {
   const { data: templatesData, refresh: refreshTemplates } = usePluginData<TemplatesData>("pipeline-templates");
   const deleteTemplate = usePluginAction("delete-template");
   const testNotification = usePluginAction("test-notification");
+  const updatePrefix = usePluginAction("update-prefix");
 
   const [deleting, setDeleting] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [prefixValue, setPrefixValue] = useState<string | null>(null);
+  const [prefixSaving, setPrefixSaving] = useState(false);
+  const [prefixSaved, setPrefixSaved] = useState(false);
+  const [payloadRefOpen, setPayloadRefOpen] = useState(false);
 
   const config = configData ?? {};
   const channel = config.notificationChannel ?? {};
@@ -101,6 +106,18 @@ export function PipelineSettingsPage({ context }: PluginSettingsPageProps) {
     } catch {}
     setDeleting(null);
   }, [deleteTemplate, refreshTemplates]);
+
+  const handlePrefixSave = useCallback(async () => {
+    if (prefixValue == null) return;
+    setPrefixSaving(true);
+    setPrefixSaved(false);
+    try {
+      await updatePrefix({ value: prefixValue });
+      setPrefixSaved(true);
+      setTimeout(() => setPrefixSaved(false), 2000);
+    } catch {}
+    setPrefixSaving(false);
+  }, [updatePrefix, prefixValue]);
 
   const handleTestNotification = useCallback(async () => {
     setTesting(true);
@@ -202,11 +219,26 @@ export function PipelineSettingsPage({ context }: PluginSettingsPageProps) {
 
         <div style={css.field}>
           <span style={css.label}>Notification Prefix</span>
-          <div style={css.fieldValue}>
-            {config.notificationPrefix || "\u2699\ufe0f Pipeline Controller"}
+          <div style={css.row}>
+            <input
+              style={css.input}
+              type="text"
+              maxLength={255}
+              value={prefixValue ?? config.notificationPrefix ?? "\u2699\ufe0f Pipeline Controller"}
+              onChange={(e) => setPrefixValue(e.target.value)}
+              onBlur={handlePrefixSave}
+              placeholder="\u2699\ufe0f Pipeline Controller"
+            />
+            <button
+              style={css.btn("secondary")}
+              onClick={handlePrefixSave}
+              disabled={prefixSaving || prefixValue == null}
+            >
+              {prefixSaving ? "Saving..." : prefixSaved ? "Saved!" : "Save"}
+            </button>
           </div>
           <div style={css.hint}>
-            Short label prepended to every alert so recipients can identify the source at a glance.
+            Short label prepended to every alert so recipients can identify the source at a glance. Max 255 characters.
           </div>
         </div>
 
@@ -225,6 +257,94 @@ export function PipelineSettingsPage({ context }: PluginSettingsPageProps) {
             </div>
           )}
         </div>
+      </div>
+
+      {/* Payload Reference */}
+      <div style={css.section}>
+        <div
+          style={{ ...css.sectionTitle, cursor: "pointer", userSelect: "none" as const }}
+          onClick={() => setPayloadRefOpen(!payloadRefOpen)}
+        >
+          {payloadRefOpen ? "\u25BE" : "\u25B8"} Payload Reference
+        </div>
+        <div style={css.sectionHelp}>
+          Exact JSON payloads sent for each notification event, and how each channel renders them.
+        </div>
+
+        {payloadRefOpen && (
+          <div style={{ fontSize: "12px", color: "var(--muted-foreground)", lineHeight: "1.6" }}>
+            <div style={{ marginBottom: "12px" }}>
+              <strong style={{ color: "var(--foreground)" }}>Base payload (all channels):</strong>
+              <pre style={{
+                background: "var(--muted)",
+                padding: "10px",
+                borderRadius: "6px",
+                overflow: "auto",
+                fontSize: "11px",
+                lineHeight: "1.4",
+                marginTop: "4px",
+              }}>{`{
+  "event": "pipeline.stuck | pipeline.complete | pipeline.step_advanced | verification.failed",
+  "prefix": "⚙️ Pipeline Alert",
+  "title": "FAI-84 stuck for 45 minutes",
+  "message": "Full description of what happened",
+  "issueIdentifier": "FAI-84",
+  "issueId": "uuid",
+  "issueUrl": "https://paperclip.example.com/issues/FAI-84",
+  "timestamp": "2026-03-21T16:40:00Z",
+  "severity": "high | medium | low"
+}`}</pre>
+            </div>
+
+            <div style={{ marginBottom: "12px" }}>
+              <strong style={{ color: "var(--foreground)" }}>Webhook (generic):</strong>
+              <div>Raw JSON POST to the configured URL. The base payload above is sent as-is in the request body with <code>Content-Type: application/json</code>. Custom headers are included if configured.</div>
+            </div>
+
+            <div style={{ marginBottom: "12px" }}>
+              <strong style={{ color: "var(--foreground)" }}>Slack:</strong>
+              <div>Formatted as Slack Block Kit attachments with color-coded severity sidebar:</div>
+              <ul style={{ margin: "4px 0", paddingLeft: "16px" }}>
+                <li>Green (#22c55e) for pipeline.complete</li>
+                <li>Amber (#f59e0b) for pipeline.stuck</li>
+                <li>Red (#ef4444) for verification.failed</li>
+              </ul>
+              <div>Includes header block (title), section block (message), optional link block, and context block (event type + timestamp).</div>
+            </div>
+
+            <div style={{ marginBottom: "12px" }}>
+              <strong style={{ color: "var(--foreground)" }}>Discord:</strong>
+              <div>Formatted as Discord embed with color-coded border:</div>
+              <ul style={{ margin: "4px 0", paddingLeft: "16px" }}>
+                <li>Green (0x22c55e) for pipeline.complete</li>
+                <li>Amber (0xf59e0b) for pipeline.stuck</li>
+                <li>Red (0xef4444) for verification.failed</li>
+              </ul>
+              <div>Includes embed title, description (message), inline fields (Issue ID, Event type), timestamp, and optional URL linking to the issue.</div>
+            </div>
+
+            <div style={{ marginBottom: "12px" }}>
+              <strong style={{ color: "var(--foreground)" }}>Telegram:</strong>
+              <div>Sent via <code>sendMessage</code> API with <code>parse_mode: "HTML"</code>. Format:</div>
+              <pre style={{
+                background: "var(--muted)",
+                padding: "10px",
+                borderRadius: "6px",
+                overflow: "auto",
+                fontSize: "11px",
+                lineHeight: "1.4",
+                marginTop: "4px",
+              }}>{`<b>FAI-84 stuck for 45 minutes</b>
+⚙️ Pipeline Alert: Full description of what happened
+<a href="https://paperclip.example.com/issues/FAI-84">View Issue</a>`}</pre>
+            </div>
+
+            <div>
+              <strong style={{ color: "var(--foreground)" }}>Email:</strong>
+              <div>JSON POST to the configured email API endpoint with fields: <code>subject</code> (title), <code>body</code> (message), <code>event</code>, <code>issueId</code>, <code>issueUrl</code>, <code>timestamp</code>. Custom headers are included if configured.</div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Stuck Detection */}

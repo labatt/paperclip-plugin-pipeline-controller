@@ -1,5 +1,5 @@
 export const PLUGIN_ID = "pipeline-controller";
-export const PLUGIN_VERSION = "0.4.0";
+export const PLUGIN_VERSION = "0.5.0";
 export const SLOT_IDS = {
     dashboardWidget: "pipeline-dashboard-widget",
     issueDetailTab: "pipeline-issue-detail-tab",
@@ -20,6 +20,8 @@ export const STATE_KEYS = {
     alertHistory: "alert-history",
     /** Saved pipeline templates. Scope: instance */
     templates: "pipeline-templates",
+    /** User-edited notification prefix override. Scope: instance */
+    notificationPrefixOverride: "notification-prefix-override",
 };
 export const DEFAULT_NOTIFICATION_CHANNEL = {
     type: "webhook",

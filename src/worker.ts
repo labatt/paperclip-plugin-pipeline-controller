@@ -26,7 +26,18 @@ import {
 
 async function getConfig(ctx: PluginContext): Promise<PipelineControllerConfig> {
   const config = await ctx.config.get();
-  return { ...DEFAULT_CONFIG, ...(config as PipelineControllerConfig) };
+  const merged = { ...DEFAULT_CONFIG, ...(config as PipelineControllerConfig) };
+
+  // Check for user-edited prefix override stored in instance state
+  const prefixOverride = await ctx.state.get({
+    scopeKind: "instance",
+    stateKey: STATE_KEYS.notificationPrefixOverride,
+  }) as { value: string } | null;
+  if (prefixOverride?.value != null) {
+    merged.notificationPrefix = prefixOverride.value;
+  }
+
+  return merged;
 }
 
 function minutesSince(dateOrIso: string | Date): number {
@@ -729,6 +740,16 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
     );
 
     return { ok: true, firstIssueId: newIssue.id };
+  });
+
+  // Update notification prefix (from settings UI)
+  ctx.actions.register("update-prefix", async (params) => {
+    const value = typeof params.value === "string" ? params.value.slice(0, 255) : "";
+    await ctx.state.set(
+      { scopeKind: "instance", stateKey: STATE_KEYS.notificationPrefixOverride },
+      { value },
+    );
+    return { ok: true };
   });
 
   // Test notification - sends a test payload through the configured channel

@@ -3,7 +3,16 @@ import { DEFAULT_CONFIG, DEFAULT_NOTIFICATION_CHANNEL, DEFAULT_NOTIFICATION_PREF
 // ---- Helpers ----
 async function getConfig(ctx) {
     const config = await ctx.config.get();
-    return { ...DEFAULT_CONFIG, ...config };
+    const merged = { ...DEFAULT_CONFIG, ...config };
+    // Check for user-edited prefix override stored in instance state
+    const prefixOverride = await ctx.state.get({
+        scopeKind: "instance",
+        stateKey: STATE_KEYS.notificationPrefixOverride,
+    });
+    if (prefixOverride?.value != null) {
+        merged.notificationPrefix = prefixOverride.value;
+    }
+    return merged;
 }
 function minutesSince(dateOrIso) {
     const time = dateOrIso instanceof Date ? dateOrIso.getTime() : new Date(dateOrIso).getTime();
@@ -582,6 +591,12 @@ async function registerActionHandlers(ctx) {
         });
         await ctx.issues.createComment(issueId, `Pipeline started. Step 1/${data.steps.length}: ${firstStep.agent} (${firstStep.role}).`, companyId);
         return { ok: true, firstIssueId: newIssue.id };
+    });
+    // Update notification prefix (from settings UI)
+    ctx.actions.register("update-prefix", async (params) => {
+        const value = typeof params.value === "string" ? params.value.slice(0, 255) : "";
+        await ctx.state.set({ scopeKind: "instance", stateKey: STATE_KEYS.notificationPrefixOverride }, { value });
+        return { ok: true };
     });
     // Test notification - sends a test payload through the configured channel
     ctx.actions.register("test-notification", async (_params) => {
