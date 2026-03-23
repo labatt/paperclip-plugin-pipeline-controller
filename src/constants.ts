@@ -1,5 +1,5 @@
 export const PLUGIN_ID = "pipeline-controller";
-export const PLUGIN_VERSION = "0.6.0";
+export const PLUGIN_VERSION = "0.9.0";
 
 export const SLOT_IDS = {
   dashboardWidget: "pipeline-dashboard-widget",
@@ -28,6 +28,10 @@ export const STATE_KEYS = {
   notificationPrefixOverride: "notification-prefix-override",
   /** Per-issue retry counter. Scope: issue */
   retryCounter: "retry-counter",
+  /** Pending verify requests. Scope: issue */
+  pendingVerify: "pending-verify",
+  /** Registry of known verifier plugins. Scope: instance */
+  verifierRegistry: "verifier-registry",
 } as const;
 
 // ---- Notification Channel Types ----
@@ -105,6 +109,13 @@ export type PipelineControllerConfig = {
   notificationPrefix?: string;
   /** Error handling policy for failed agent runs */
   errorPolicy?: ErrorPolicyConfig;
+  /** Optional content verification config passed to verifier plugins */
+  contentVerification?: {
+    minWords?: number;
+    minImages?: number;
+    apiUrl?: string;
+    apiToken?: string;
+  };
 };
 
 export interface PipelineStep {
@@ -115,6 +126,25 @@ export interface PipelineStep {
   errorPolicy?: ErrorPolicy;
   /** Per-step max retries override. Falls back to global errorPolicy.maxRetries. */
   maxRetries?: number;
+  /** Plugin IDs of verifiers to run when this step completes (e.g. ["content-verifier"]) */
+  verifiers?: string[];
+}
+
+/** Entry in the auto-discovered verifier registry */
+export interface VerifierRegistryEntry {
+  pluginId: string;
+  displayName: string;
+  lastSeen: string;
+}
+
+/** Result shape returned by a verifier plugin's verify-result event */
+export interface VerifierResult {
+  requestId?: string;
+  issueId: string;
+  pluginId: string;
+  passed: boolean;
+  failures: string[];
+  stats: Record<string, unknown>;
 }
 
 /** Stored in ctx.state per issue (scopeKind: "issue", stateKey: "pipeline-data") */

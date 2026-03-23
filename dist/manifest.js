@@ -9,6 +9,7 @@ const manifest = {
     categories: ["automation", "ui"],
     capabilities: [
         "events.subscribe",
+        "events.emit",
         "companies.read",
         "issues.read",
         "issues.create",
@@ -84,6 +85,35 @@ const manifest = {
                         type: "string",
                         title: "Error Overseer Agent ID",
                         description: "Agent to reassign the issue to when a step fails and policy is 'escalate'. If not set, the pipeline is blocked for manual intervention.",
+                    },
+                },
+            },
+            contentVerification: {
+                type: "object",
+                title: "Content Verification Config",
+                description: "Default configuration passed to verifier plugins when a pipeline step has verifiers configured. Individual verifier plugins may also use their own instance config.",
+                properties: {
+                    minWords: {
+                        type: "number",
+                        title: "Minimum Word Count",
+                        default: 300,
+                        description: "Minimum word count for content verification.",
+                    },
+                    minImages: {
+                        type: "number",
+                        title: "Minimum Image Count",
+                        default: 1,
+                        description: "Minimum image count for content verification.",
+                    },
+                    apiUrl: {
+                        type: "string",
+                        title: "Site API URL",
+                        description: "Base URL of the content API for verification.",
+                    },
+                    apiToken: {
+                        type: "string",
+                        title: "Site API Token",
+                        description: "Bearer token for the content API.",
                     },
                 },
             },

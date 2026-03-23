@@ -120,7 +120,10 @@ var css2 = {
   arrow: { color: "var(--muted-foreground)", fontSize: "11px" },
   empty: { color: "var(--muted-foreground)", fontSize: "13px", fontStyle: "italic", textAlign: "center", padding: "24px" },
   templateRow: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0" },
-  error: { color: "var(--destructive)", fontSize: "12px", marginTop: "4px" }
+  error: { color: "var(--destructive)", fontSize: "12px", marginTop: "4px" },
+  verifierRow: { display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap", paddingLeft: "32px", marginBottom: "6px", fontSize: "11px", color: "var(--muted-foreground)" },
+  verifierCheckbox: { display: "inline-flex", alignItems: "center", gap: "3px", cursor: "pointer", fontSize: "11px", color: "var(--foreground)" },
+  verifierLabel: { fontSize: "11px", fontWeight: 500, color: "var(--muted-foreground)", marginRight: "4px" }
 };
 function statusIcon(status) {
   if (status === "done") return "\u2705";
@@ -147,6 +150,7 @@ function PipelineIssueDetailTab({ context }) {
   const [helpExpanded, setHelpExpanded] = useState(false);
   const pipeline = data?.pipeline ?? null;
   const agents = data?.agents ?? [];
+  const availableVerifiers = data?.availableVerifiers ?? [];
   const templates = templatesData?.templates ?? [];
   const startEdit = useCallback(() => {
     setEditSteps(pipeline?.steps ? [...pipeline.steps] : []);
@@ -184,6 +188,23 @@ function PipelineIssueDetailTab({ context }) {
       return next;
     });
   }, [agents]);
+  const toggleVerifier = useCallback((idx, pluginId) => {
+    setEditSteps((prev) => {
+      const next = [...prev];
+      const step = { ...next[idx] };
+      const current = step.verifiers ?? [];
+      if (current.includes(pluginId)) {
+        step.verifiers = current.filter((v) => v !== pluginId);
+      } else {
+        step.verifiers = [...current, pluginId];
+      }
+      if (step.verifiers.length === 0) {
+        delete step.verifiers;
+      }
+      next[idx] = step;
+      return next;
+    });
+  }, []);
   const loadTemplate = useCallback((tmpl) => {
     setEditSteps([...tmpl.steps]);
   }, []);
@@ -290,29 +311,45 @@ function PipelineIssueDetailTab({ context }) {
       ] }),
       /* @__PURE__ */ jsxs2("div", { style: css2.section, children: [
         /* @__PURE__ */ jsx2("div", { style: css2.sectionTitle, children: "Steps" }),
-        editSteps.map((step, idx) => /* @__PURE__ */ jsxs2("div", { style: css2.stepRow, children: [
-          /* @__PURE__ */ jsx2("span", { style: css2.stepNum, children: idx + 1 }),
-          /* @__PURE__ */ jsx2(
-            "select",
-            {
-              style: css2.select,
-              value: step.agentId,
-              onChange: (e) => updateStep(idx, "agentId", e.target.value),
-              children: agents.map((a) => /* @__PURE__ */ jsx2("option", { value: a.id, children: a.name }, a.id))
-            }
-          ),
-          /* @__PURE__ */ jsx2(
-            "input",
-            {
-              style: css2.input,
-              value: step.role,
-              onChange: (e) => updateStep(idx, "role", e.target.value),
-              placeholder: "Role (e.g. research)"
-            }
-          ),
-          /* @__PURE__ */ jsx2("button", { style: css2.btnSmall, onClick: () => moveStep(idx, -1), disabled: idx === 0, children: "\u2191" }),
-          /* @__PURE__ */ jsx2("button", { style: css2.btnSmall, onClick: () => moveStep(idx, 1), disabled: idx === editSteps.length - 1, children: "\u2193" }),
-          /* @__PURE__ */ jsx2("button", { style: { ...css2.btnSmall, color: "var(--destructive)" }, onClick: () => removeStep(idx), children: "\xD7" })
+        editSteps.map((step, idx) => /* @__PURE__ */ jsxs2("div", { children: [
+          /* @__PURE__ */ jsxs2("div", { style: css2.stepRow, children: [
+            /* @__PURE__ */ jsx2("span", { style: css2.stepNum, children: idx + 1 }),
+            /* @__PURE__ */ jsx2(
+              "select",
+              {
+                style: css2.select,
+                value: step.agentId,
+                onChange: (e) => updateStep(idx, "agentId", e.target.value),
+                children: agents.map((a) => /* @__PURE__ */ jsx2("option", { value: a.id, children: a.name }, a.id))
+              }
+            ),
+            /* @__PURE__ */ jsx2(
+              "input",
+              {
+                style: css2.input,
+                value: step.role,
+                onChange: (e) => updateStep(idx, "role", e.target.value),
+                placeholder: "Role (e.g. research)"
+              }
+            ),
+            /* @__PURE__ */ jsx2("button", { style: css2.btnSmall, onClick: () => moveStep(idx, -1), disabled: idx === 0, children: "\u2191" }),
+            /* @__PURE__ */ jsx2("button", { style: css2.btnSmall, onClick: () => moveStep(idx, 1), disabled: idx === editSteps.length - 1, children: "\u2193" }),
+            /* @__PURE__ */ jsx2("button", { style: { ...css2.btnSmall, color: "var(--destructive)" }, onClick: () => removeStep(idx), children: "\xD7" })
+          ] }),
+          availableVerifiers.length > 0 && /* @__PURE__ */ jsxs2("div", { style: css2.verifierRow, children: [
+            /* @__PURE__ */ jsx2("span", { style: css2.verifierLabel, children: "Verifiers:" }),
+            availableVerifiers.map((v) => /* @__PURE__ */ jsxs2("label", { style: css2.verifierCheckbox, children: [
+              /* @__PURE__ */ jsx2(
+                "input",
+                {
+                  type: "checkbox",
+                  checked: step.verifiers?.includes(v.pluginId) ?? false,
+                  onChange: () => toggleVerifier(idx, v.pluginId)
+                }
+              ),
+              v.displayName
+            ] }, v.pluginId))
+          ] })
         ] }, idx)),
         /* @__PURE__ */ jsx2("button", { style: { ...css2.btnSmall, marginTop: "8px" }, onClick: addStep, children: "+ Add Step" })
       ] }),
@@ -368,11 +405,20 @@ function PipelineIssueDetailTab({ context }) {
     ] }, idx)) }),
     /* @__PURE__ */ jsxs2("div", { style: css2.section, children: [
       /* @__PURE__ */ jsx2("div", { style: css2.sectionTitle, children: "Steps" }),
-      pipeline.steps.map((step, idx) => /* @__PURE__ */ jsxs2("div", { style: css2.stepRow, children: [
-        /* @__PURE__ */ jsx2("span", { style: css2.stepNum, children: idx + 1 }),
-        /* @__PURE__ */ jsx2("span", { style: { fontSize: "16px" }, children: statusIcon(stepStatuses[idx]) }),
-        /* @__PURE__ */ jsx2("span", { style: css2.stepAgent, children: step.agent }),
-        /* @__PURE__ */ jsx2("span", { style: css2.stepRole, children: step.role })
+      pipeline.steps.map((step, idx) => /* @__PURE__ */ jsxs2("div", { children: [
+        /* @__PURE__ */ jsxs2("div", { style: css2.stepRow, children: [
+          /* @__PURE__ */ jsx2("span", { style: css2.stepNum, children: idx + 1 }),
+          /* @__PURE__ */ jsx2("span", { style: { fontSize: "16px" }, children: statusIcon(stepStatuses[idx]) }),
+          /* @__PURE__ */ jsx2("span", { style: css2.stepAgent, children: step.agent }),
+          /* @__PURE__ */ jsx2("span", { style: css2.stepRole, children: step.role })
+        ] }),
+        step.verifiers && step.verifiers.length > 0 && /* @__PURE__ */ jsxs2("div", { style: css2.verifierRow, children: [
+          /* @__PURE__ */ jsx2("span", { style: css2.verifierLabel, children: "Verifiers:" }),
+          step.verifiers.map((v) => {
+            const info = availableVerifiers.find((av) => av.pluginId === v);
+            return /* @__PURE__ */ jsx2("span", { style: { padding: "1px 6px", borderRadius: "4px", background: "var(--accent)", color: "var(--accent-foreground)", fontSize: "11px" }, children: info?.displayName ?? v }, v);
+          })
+        ] })
       ] }, idx))
     ] }),
     errorMsg && /* @__PURE__ */ jsx2("div", { style: css2.error, children: errorMsg }),

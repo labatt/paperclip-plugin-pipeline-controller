@@ -6,6 +6,13 @@ interface PipelineStep {
   agent: string;
   agentId: string;
   role: string;
+  verifiers?: string[];
+}
+
+interface VerifierInfo {
+  pluginId: string;
+  displayName: string;
+  lastSeen: string;
 }
 
 interface StepHistory {
@@ -36,6 +43,7 @@ interface AgentInfo {
 interface IssuePipelineData {
   pipeline: PipelineData | null;
   agents: AgentInfo[];
+  availableVerifiers: VerifierInfo[];
 }
 
 interface TemplatesData {
@@ -85,6 +93,9 @@ const css = {
   empty: { color: "var(--muted-foreground)", fontSize: "13px", fontStyle: "italic" as const, textAlign: "center" as const, padding: "24px" } as React.CSSProperties,
   templateRow: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0" } as React.CSSProperties,
   error: { color: "var(--destructive)", fontSize: "12px", marginTop: "4px" } as React.CSSProperties,
+  verifierRow: { display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" as const, paddingLeft: "32px", marginBottom: "6px", fontSize: "11px", color: "var(--muted-foreground)" } as React.CSSProperties,
+  verifierCheckbox: { display: "inline-flex", alignItems: "center", gap: "3px", cursor: "pointer", fontSize: "11px", color: "var(--foreground)" } as React.CSSProperties,
+  verifierLabel: { fontSize: "11px", fontWeight: 500, color: "var(--muted-foreground)", marginRight: "4px" } as React.CSSProperties,
 };
 
 function statusIcon(status: string): string {
@@ -117,6 +128,7 @@ export function PipelineIssueDetailTab({ context }: PluginDetailTabProps) {
 
   const pipeline = data?.pipeline ?? null;
   const agents = data?.agents ?? [];
+  const availableVerifiers = data?.availableVerifiers ?? [];
   const templates = templatesData?.templates ?? [];
 
   const startEdit = useCallback(() => {
@@ -159,6 +171,24 @@ export function PipelineIssueDetailTab({ context }: PluginDetailTabProps) {
       return next;
     });
   }, [agents]);
+
+  const toggleVerifier = useCallback((idx: number, pluginId: string) => {
+    setEditSteps((prev) => {
+      const next = [...prev];
+      const step = { ...next[idx]! };
+      const current = step.verifiers ?? [];
+      if (current.includes(pluginId)) {
+        step.verifiers = current.filter((v) => v !== pluginId);
+      } else {
+        step.verifiers = [...current, pluginId];
+      }
+      if (step.verifiers.length === 0) {
+        delete step.verifiers;
+      }
+      next[idx] = step;
+      return next;
+    });
+  }, []);
 
   const loadTemplate = useCallback((tmpl: { steps: PipelineStep[] }) => {
     setEditSteps([...tmpl.steps]);
@@ -279,32 +309,49 @@ export function PipelineIssueDetailTab({ context }: PluginDetailTabProps) {
         <div style={css.section}>
           <div style={css.sectionTitle}>Steps</div>
           {editSteps.map((step, idx) => (
-            <div key={idx} style={css.stepRow}>
-              <span style={css.stepNum}>{idx + 1}</span>
-              <select
-                style={css.select}
-                value={step.agentId}
-                onChange={(e) => updateStep(idx, "agentId", e.target.value)}
-              >
-                {agents.map((a) => (
-                  <option key={a.id} value={a.id}>{a.name}</option>
-                ))}
-              </select>
-              <input
-                style={css.input}
-                value={step.role}
-                onChange={(e) => updateStep(idx, "role", e.target.value)}
-                placeholder="Role (e.g. research)"
-              />
-              <button style={css.btnSmall} onClick={() => moveStep(idx, -1)} disabled={idx === 0}>
-                &uarr;
-              </button>
-              <button style={css.btnSmall} onClick={() => moveStep(idx, 1)} disabled={idx === editSteps.length - 1}>
-                &darr;
-              </button>
-              <button style={{ ...css.btnSmall, color: "var(--destructive)" }} onClick={() => removeStep(idx)}>
-                &times;
-              </button>
+            <div key={idx}>
+              <div style={css.stepRow}>
+                <span style={css.stepNum}>{idx + 1}</span>
+                <select
+                  style={css.select}
+                  value={step.agentId}
+                  onChange={(e) => updateStep(idx, "agentId", e.target.value)}
+                >
+                  {agents.map((a) => (
+                    <option key={a.id} value={a.id}>{a.name}</option>
+                  ))}
+                </select>
+                <input
+                  style={css.input}
+                  value={step.role}
+                  onChange={(e) => updateStep(idx, "role", e.target.value)}
+                  placeholder="Role (e.g. research)"
+                />
+                <button style={css.btnSmall} onClick={() => moveStep(idx, -1)} disabled={idx === 0}>
+                  &uarr;
+                </button>
+                <button style={css.btnSmall} onClick={() => moveStep(idx, 1)} disabled={idx === editSteps.length - 1}>
+                  &darr;
+                </button>
+                <button style={{ ...css.btnSmall, color: "var(--destructive)" }} onClick={() => removeStep(idx)}>
+                  &times;
+                </button>
+              </div>
+              {availableVerifiers.length > 0 && (
+                <div style={css.verifierRow}>
+                  <span style={css.verifierLabel}>Verifiers:</span>
+                  {availableVerifiers.map((v) => (
+                    <label key={v.pluginId} style={css.verifierCheckbox}>
+                      <input
+                        type="checkbox"
+                        checked={step.verifiers?.includes(v.pluginId) ?? false}
+                        onChange={() => toggleVerifier(idx, v.pluginId)}
+                      />
+                      {v.displayName}
+                    </label>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
           <button style={{ ...css.btnSmall, marginTop: "8px" }} onClick={addStep}>
@@ -388,11 +435,26 @@ export function PipelineIssueDetailTab({ context }: PluginDetailTabProps) {
       <div style={css.section}>
         <div style={css.sectionTitle}>Steps</div>
         {pipeline.steps.map((step, idx) => (
-          <div key={idx} style={css.stepRow}>
-            <span style={css.stepNum}>{idx + 1}</span>
-            <span style={{ fontSize: "16px" }}>{statusIcon(stepStatuses[idx]!)}</span>
-            <span style={css.stepAgent}>{step.agent}</span>
-            <span style={css.stepRole}>{step.role}</span>
+          <div key={idx}>
+            <div style={css.stepRow}>
+              <span style={css.stepNum}>{idx + 1}</span>
+              <span style={{ fontSize: "16px" }}>{statusIcon(stepStatuses[idx]!)}</span>
+              <span style={css.stepAgent}>{step.agent}</span>
+              <span style={css.stepRole}>{step.role}</span>
+            </div>
+            {step.verifiers && step.verifiers.length > 0 && (
+              <div style={css.verifierRow}>
+                <span style={css.verifierLabel}>Verifiers:</span>
+                {step.verifiers.map((v) => {
+                  const info = availableVerifiers.find((av) => av.pluginId === v);
+                  return (
+                    <span key={v} style={{ padding: "1px 6px", borderRadius: "4px", background: "var(--accent)", color: "var(--accent-foreground)", fontSize: "11px" }}>
+                      {info?.displayName ?? v}
+                    </span>
+                  );
+                })}
+              </div>
+            )}
           </div>
         ))}
       </div>

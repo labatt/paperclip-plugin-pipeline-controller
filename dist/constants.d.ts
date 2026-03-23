@@ -1,5 +1,5 @@
 export declare const PLUGIN_ID = "pipeline-controller";
-export declare const PLUGIN_VERSION = "0.6.0";
+export declare const PLUGIN_VERSION = "0.9.0";
 export declare const SLOT_IDS: {
     readonly dashboardWidget: "pipeline-dashboard-widget";
     readonly issueDetailTab: "pipeline-issue-detail-tab";
@@ -24,6 +24,10 @@ export declare const STATE_KEYS: {
     readonly notificationPrefixOverride: "notification-prefix-override";
     /** Per-issue retry counter. Scope: issue */
     readonly retryCounter: "retry-counter";
+    /** Pending verify requests. Scope: issue */
+    readonly pendingVerify: "pending-verify";
+    /** Registry of known verifier plugins. Scope: instance */
+    readonly verifierRegistry: "verifier-registry";
 };
 export type NotificationChannelType = "webhook" | "slack" | "discord" | "telegram" | "email";
 export interface NotificationChannel {
@@ -78,6 +82,13 @@ export type PipelineControllerConfig = {
     notificationPrefix?: string;
     /** Error handling policy for failed agent runs */
     errorPolicy?: ErrorPolicyConfig;
+    /** Optional content verification config passed to verifier plugins */
+    contentVerification?: {
+        minWords?: number;
+        minImages?: number;
+        apiUrl?: string;
+        apiToken?: string;
+    };
 };
 export interface PipelineStep {
     agent: string;
@@ -87,6 +98,23 @@ export interface PipelineStep {
     errorPolicy?: ErrorPolicy;
     /** Per-step max retries override. Falls back to global errorPolicy.maxRetries. */
     maxRetries?: number;
+    /** Plugin IDs of verifiers to run when this step completes (e.g. ["content-verifier"]) */
+    verifiers?: string[];
+}
+/** Entry in the auto-discovered verifier registry */
+export interface VerifierRegistryEntry {
+    pluginId: string;
+    displayName: string;
+    lastSeen: string;
+}
+/** Result shape returned by a verifier plugin's verify-result event */
+export interface VerifierResult {
+    requestId?: string;
+    issueId: string;
+    pluginId: string;
+    passed: boolean;
+    failures: string[];
+    stats: Record<string, unknown>;
 }
 /** Stored in ctx.state per issue (scopeKind: "issue", stateKey: "pipeline-data") */
 export interface PipelineData {

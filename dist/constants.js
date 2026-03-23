@@ -1,5 +1,5 @@
 export const PLUGIN_ID = "pipeline-controller";
-export const PLUGIN_VERSION = "0.6.0";
+export const PLUGIN_VERSION = "0.9.0";
 export const SLOT_IDS = {
     dashboardWidget: "pipeline-dashboard-widget",
     issueDetailTab: "pipeline-issue-detail-tab",
@@ -24,6 +24,10 @@ export const STATE_KEYS = {
     notificationPrefixOverride: "notification-prefix-override",
     /** Per-issue retry counter. Scope: issue */
     retryCounter: "retry-counter",
+    /** Pending verify requests. Scope: issue */
+    pendingVerify: "pending-verify",
+    /** Registry of known verifier plugins. Scope: instance */
+    verifierRegistry: "verifier-registry",
 };
 export const DEFAULT_ERROR_POLICY = {
     defaultPolicy: "escalate",

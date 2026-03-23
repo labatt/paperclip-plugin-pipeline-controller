@@ -23,6 +23,8 @@ import {
   type PipelineData,
   type PipelineStep,
   type PipelineTemplates,
+  type VerifierRegistryEntry,
+  type VerifierResult,
 } from "./constants.js";
 
 // ---- Helpers ----
@@ -70,6 +72,391 @@ async function setPipelineData(
     { scopeKind: "issue", scopeId: issueId, stateKey: STATE_KEYS.pipelineData },
     data,
   );
+}
+
+// ---- Verification System ----
+
+/**
+ * Pending verification tracking. When a step completes and has verifiers
+ * configured, we emit verify-request events and store pending state.
+ * When verify-result events arrive, we process them and decide whether
+ * to advance or fail the pipeline.
+ */
+interface PendingVerification {
+  requestId: string;
+  parentId: string;
+  completedIssueId: string;
+  completedStepIndex: number;
+  companyId: string;
+  verifiers: string[];
+  results: VerifierResult[];
+  createdAt: string;
+}
+
+function generateRequestId(): string {
+  return `vr-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+async function getPendingVerification(
+  ctx: PluginContext,
+  parentId: string,
+): Promise<PendingVerification | null> {
+  return (await ctx.state.get({
+    scopeKind: "issue",
+    scopeId: parentId,
+    stateKey: STATE_KEYS.pendingVerify,
+  })) as PendingVerification | null;
+}
+
+async function setPendingVerification(
+  ctx: PluginContext,
+  parentId: string,
+  data: PendingVerification | null,
+): Promise<void> {
+  if (data === null) {
+    await ctx.state.delete({
+      scopeKind: "issue",
+      scopeId: parentId,
+      stateKey: STATE_KEYS.pendingVerify,
+    });
+  } else {
+    await ctx.state.set(
+      { scopeKind: "issue", scopeId: parentId, stateKey: STATE_KEYS.pendingVerify },
+      data,
+    );
+  }
+}
+
+/**
+ * Emit verify-request events for each configured verifier on a step.
+ * Returns the requestId used to correlate results.
+ */
+async function emitVerifyRequests(
+  ctx: PluginContext,
+  parentId: string,
+  completedIssueId: string,
+  completedStepIndex: number,
+  companyId: string,
+  verifiers: string[],
+  config: PipelineControllerConfig,
+): Promise<string> {
+  const requestId = generateRequestId();
+
+  // Store pending verification state
+  const pending: PendingVerification = {
+    requestId,
+    parentId,
+    completedIssueId,
+    completedStepIndex,
+    companyId,
+    verifiers,
+    results: [],
+    createdAt: new Date().toISOString(),
+  };
+  await setPendingVerification(ctx, parentId, pending);
+
+  // Emit a verify-request event for each verifier plugin
+  for (const _verifierPluginId of verifiers) {
+    await ctx.events.emit("verify-request", companyId, {
+      requestId,
+      issueId: completedIssueId,
+      companyId,
+      parentId,
+      stepIndex: completedStepIndex,
+      // Pass relevant config from pipeline controller settings
+      config: {
+        minWords: config.contentVerification?.minWords,
+        minImages: config.contentVerification?.minImages,
+        apiUrl: config.contentVerification?.apiUrl,
+        apiToken: config.contentVerification?.apiToken,
+      },
+    });
+  }
+
+  ctx.logger.info("Emitted verify-request events", {
+    requestId,
+    parentId,
+    verifiers,
+    completedIssueId,
+  });
+
+  return requestId;
+}
+
+/**
+ * Handle a verify-result event from a verifier plugin.
+ * Collects results and when all verifiers have responded, processes the outcome.
+ */
+async function handleVerifyResult(
+  ctx: PluginContext,
+  event: PluginEvent,
+): Promise<void> {
+  const result = event.payload as VerifierResult | undefined;
+  if (!result?.requestId || !result?.issueId) return;
+
+  // Find the pending verification that matches this requestId
+  // We need to search by requestId - check the issue referenced
+  const companyId = event.companyId;
+
+  // Get the issue to find its parent (which holds the pending verification state)
+  const issue = await ctx.issues.get(result.issueId, companyId);
+  if (!issue) return;
+
+  const parentId = issue.parentId;
+  if (!parentId) return;
+
+  const pending = await getPendingVerification(ctx, parentId);
+  if (!pending || pending.requestId !== result.requestId) {
+    ctx.logger.debug("Ignoring verify-result for unknown/stale request", {
+      requestId: result.requestId,
+    });
+    return;
+  }
+
+  // Auto-register this verifier plugin in the registry
+  if (result.pluginId) {
+    await registerVerifierPlugin(ctx, result.pluginId);
+  }
+
+  // Add this result
+  pending.results.push(result);
+  await setPendingVerification(ctx, parentId, pending);
+
+  ctx.logger.info("Received verify-result", {
+    requestId: result.requestId,
+    pluginId: result.pluginId,
+    passed: result.passed,
+    collected: pending.results.length,
+    expected: pending.verifiers.length,
+  });
+
+  // Check if all verifiers have responded
+  if (pending.results.length >= pending.verifiers.length) {
+    await processVerificationResults(ctx, pending);
+  }
+}
+
+/**
+ * Process collected verification results once all verifiers have responded.
+ */
+async function processVerificationResults(
+  ctx: PluginContext,
+  pending: PendingVerification,
+): Promise<void> {
+  const allPassed = pending.results.every((r) => r.passed);
+  const config = await getConfig(ctx);
+
+  if (allPassed) {
+    ctx.logger.info("All verifications passed, continuing pipeline advance", {
+      parentId: pending.parentId,
+      requestId: pending.requestId,
+    });
+
+    // Clean up pending state
+    await setPendingVerification(ctx, pending.parentId, null);
+
+    // Continue the pipeline advance that was deferred
+    await continueAdvanceAfterVerification(
+      ctx,
+      pending.parentId,
+      pending.completedIssueId,
+      pending.completedStepIndex,
+      pending.companyId,
+    );
+  } else {
+    // Collect all failures
+    const allFailures = pending.results
+      .filter((r) => !r.passed)
+      .flatMap((r) => r.failures.map((f) => `[${r.pluginId}] ${f}`));
+
+    // Reopen the completed task
+    await ctx.issues.update(
+      pending.completedIssueId,
+      { status: "todo" },
+      pending.companyId,
+    );
+
+    await ctx.issues.createComment(
+      pending.completedIssueId,
+      `Verification FAILED. Reopening task.\n\n${allFailures.map((f) => `- ${f}`).join("\n")}`,
+      pending.companyId,
+    );
+
+    // Comment on parent
+    await ctx.issues.createComment(
+      pending.parentId,
+      `Step ${pending.completedStepIndex + 1} verification failed. Task reopened for rework.\n\n${allFailures.map((f) => `- ${f}`).join("\n")}`,
+      pending.companyId,
+    );
+
+    // Send notification
+    await sendNotification(ctx, config, {
+      event: "verification.failed",
+      title: "Verification Failed",
+      message: allFailures.join("\n"),
+      issueId: pending.parentId,
+      timestamp: new Date().toISOString(),
+    });
+
+    // Clean up pending state
+    await setPendingVerification(ctx, pending.parentId, null);
+
+    ctx.logger.info("Verification failed, task reopened", {
+      parentId: pending.parentId,
+      requestId: pending.requestId,
+      failures: allFailures,
+    });
+  }
+}
+
+/**
+ * Continue the pipeline advance after successful verification.
+ * This is the same logic as the second half of handleIssueCompleted,
+ * extracted so it can be called after deferred verification.
+ */
+async function continueAdvanceAfterVerification(
+  ctx: PluginContext,
+  parentId: string,
+  completedIssueId: string,
+  completedStepIndex: number,
+  companyId: string,
+): Promise<void> {
+  const pipelineData = await getPipelineData(ctx, parentId);
+  if (!pipelineData) return;
+
+  const completedStep = pipelineData.steps[completedStepIndex];
+  if (!completedStep) return;
+
+  const nextStepIndex = completedStepIndex + 1;
+  const history = pipelineData.stepHistory ?? [];
+
+  if (nextStepIndex < pipelineData.steps.length) {
+    const nextStep = pipelineData.steps[nextStepIndex]!;
+
+    const comments = await ctx.issues.listComments(completedIssueId, companyId);
+    const contextSummary = comments
+      .map((c) => c.body)
+      .filter((body) => body.length > 0)
+      .slice(-3)
+      .join("\n\n---\n\n");
+
+    const parentIssue = await ctx.issues.get(parentId, companyId);
+    const parentTitle = parentIssue?.title ?? "Pipeline task";
+
+    const description = [
+      `Pipeline step ${nextStepIndex + 1}/${pipelineData.steps.length}: ${nextStep.role}`,
+      `Parent: ${parentTitle}`,
+      `Previous step completed by ${completedStep.agent} (${completedStep.role}). Verification passed.`,
+      "",
+      contextSummary ? `## Context from previous step\n\n${contextSummary}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    const issue = await ctx.issues.get(completedIssueId, companyId);
+    const newIssue = await ctx.issues.create({
+      companyId,
+      parentId,
+      title: `[${nextStep.role}] ${parentTitle}`,
+      description,
+      assigneeAgentId: nextStep.agentId,
+      priority: issue?.priority,
+    });
+
+    history.push({
+      stepIndex: nextStepIndex,
+      agent: nextStep.agent,
+      status: "active" as const,
+      startedAt: new Date().toISOString(),
+      subTaskId: newIssue.id,
+    });
+
+    await ctx.issues.createComment(
+      parentId,
+      `Step ${completedStepIndex + 1} complete and verified (${completedStep.agent} - ${completedStep.role}). Starting step ${nextStepIndex + 1} (${nextStep.agent} - ${nextStep.role}).`,
+      companyId,
+    );
+
+    await setPipelineData(ctx, parentId, {
+      ...pipelineData,
+      currentStep: nextStepIndex,
+      completedSteps: [...(pipelineData.completedSteps ?? []), completedStep.agent],
+      stepHistory: history,
+      lastAdvancedAt: new Date().toISOString(),
+    });
+
+    ctx.logger.info("Pipeline advanced after verification", {
+      parentId,
+      from: completedStep.agent,
+      to: nextStep.agent,
+      newIssueId: newIssue.id,
+    });
+  } else {
+    // Pipeline complete
+    await ctx.issues.createComment(
+      parentId,
+      `Pipeline complete! All ${pipelineData.steps.length} steps finished and verified. Last step: ${completedStep.agent} (${completedStep.role}).`,
+      companyId,
+    );
+
+    await ctx.issues.update(parentId, { status: "done" }, companyId);
+
+    await setPipelineData(ctx, parentId, {
+      ...pipelineData,
+      currentStep: pipelineData.steps.length,
+      completedSteps: [...(pipelineData.completedSteps ?? []), completedStep.agent],
+      stepHistory: history,
+      lastAdvancedAt: new Date().toISOString(),
+    });
+
+    const config = await getConfig(ctx);
+    const parentIssue = await ctx.issues.get(parentId, companyId);
+    await sendNotification(ctx, config, {
+      event: "pipeline.complete",
+      title: "Pipeline Complete",
+      message: `${parentIssue?.title ?? parentId} - All ${pipelineData.steps.length} steps finished.`,
+      issueId: parentId,
+      timestamp: new Date().toISOString(),
+    });
+
+    ctx.logger.info("Pipeline completed after verification", { parentId });
+  }
+}
+
+// ---- Verifier Registry ----
+
+async function getVerifierRegistry(ctx: PluginContext): Promise<VerifierRegistryEntry[]> {
+  const registry = (await ctx.state.get({
+    scopeKind: "instance",
+    stateKey: STATE_KEYS.verifierRegistry,
+  })) as { verifiers: VerifierRegistryEntry[] } | null;
+  return registry?.verifiers ?? [];
+}
+
+async function registerVerifierPlugin(
+  ctx: PluginContext,
+  pluginId: string,
+  displayName?: string,
+): Promise<void> {
+  const key = { scopeKind: "instance" as const, stateKey: STATE_KEYS.verifierRegistry };
+  const existing = (await ctx.state.get(key)) as { verifiers: VerifierRegistryEntry[] } | null;
+  const verifiers = existing?.verifiers ?? [];
+  const idx = verifiers.findIndex((v) => v.pluginId === pluginId);
+  const entry: VerifierRegistryEntry = {
+    pluginId,
+    displayName:
+      displayName ??
+      pluginId
+        .replace(/-/g, " ")
+        .replace(/\b\w/g, (c) => c.toUpperCase()),
+    lastSeen: new Date().toISOString(),
+  };
+  if (idx >= 0) {
+    verifiers[idx] = entry;
+  } else {
+    verifiers.push(entry);
+  }
+  await ctx.state.set(key, { verifiers });
 }
 
 // ---- Notification System ----
@@ -298,6 +685,152 @@ async function sendNotification(
 
 // ---- Auto-advance Pipeline ----
 
+/**
+ * Handle the case where an issue WITH pipeline data is itself marked as done
+ * (not a sub-task, but the pipeline parent directly). This happens when an agent
+ * works on the parent issue and marks it done without the sub-task flow.
+ *
+ * Bug fix: previously the pipeline controller only watched sub-task completions.
+ * Now it also intercepts direct parent completions and advances the pipeline.
+ */
+async function handleDirectPipelineCompletion(
+  ctx: PluginContext,
+  event: PluginEvent,
+  issue: Issue,
+): Promise<void> {
+  const issueId = issue.id;
+  const companyId = event.companyId;
+
+  const pipelineData = await getPipelineData(ctx, issueId);
+  if (!pipelineData || !pipelineData.steps || pipelineData.steps.length === 0) return;
+
+  // If pipeline is already fully complete, do nothing
+  if (pipelineData.currentStep >= pipelineData.steps.length) return;
+
+  // Find current step by matching assignee or fall back to pipelineData.currentStep
+  const assignee = issue.assigneeAgentId ?? "";
+  let currentStepIndex = pipelineData.steps.findIndex(
+    (step) => assignee === step.agentId || assignee.startsWith(step.agentId.slice(0, 8)),
+  );
+
+  if (currentStepIndex === -1) {
+    // No assignee match -- use the tracked currentStep
+    currentStepIndex = pipelineData.currentStep;
+  }
+
+  if (currentStepIndex < 0 || currentStepIndex >= pipelineData.steps.length) return;
+
+  const currentStep = pipelineData.steps[currentStepIndex]!;
+  const nextStepIndex = currentStepIndex + 1;
+  const history = pipelineData.stepHistory ?? [];
+
+  // Mark current step done in history
+  const existingEntry = history.find((h) => h.stepIndex === currentStepIndex && h.status === "active");
+  if (existingEntry) {
+    existingEntry.status = "done";
+    existingEntry.completedAt = new Date().toISOString();
+  } else {
+    history.push({
+      stepIndex: currentStepIndex,
+      agent: currentStep.agent,
+      status: "done" as const,
+      completedAt: new Date().toISOString(),
+    });
+  }
+
+  // Check if the completed step has verifiers
+  const verifiers = currentStep.verifiers;
+  if (verifiers && verifiers.length > 0) {
+    // Reset status while verification runs
+    await ctx.issues.update(issueId, { status: "in_progress" }, companyId);
+
+    await setPipelineData(ctx, issueId, {
+      ...pipelineData,
+      stepHistory: history,
+      lastAdvancedAt: new Date().toISOString(),
+    });
+
+    const config = await getConfig(ctx);
+    await emitVerifyRequests(ctx, issueId, issueId, currentStepIndex, companyId, verifiers, config);
+
+    await ctx.issues.createComment(
+      issueId,
+      `Step ${currentStepIndex + 1} complete (${currentStep.agent} - ${currentStep.role}). Running verification (${verifiers.join(", ")}) before advancing.`,
+      companyId,
+    );
+
+    ctx.logger.info("Direct pipeline advance deferred for verification", {
+      issueId,
+      currentStep: currentStep.agent,
+      verifiers,
+    });
+    return;
+  }
+
+  if (nextStepIndex < pipelineData.steps.length) {
+    const nextStep = pipelineData.steps[nextStepIndex]!;
+
+    // Reset status to in_progress and reassign to next step agent
+    await ctx.issues.update(issueId, {
+      status: "in_progress",
+      assigneeAgentId: nextStep.agentId,
+    }, companyId);
+
+    await ctx.issues.createComment(
+      issueId,
+      `Pipeline advancing: step ${currentStepIndex + 1} (${currentStep.agent} - ${currentStep.role}) complete. Moving to step ${nextStepIndex + 1} (${nextStep.agent} - ${nextStep.role}).`,
+      companyId,
+    );
+
+    history.push({
+      stepIndex: nextStepIndex,
+      agent: nextStep.agent,
+      status: "active" as const,
+      startedAt: new Date().toISOString(),
+    });
+
+    await setPipelineData(ctx, issueId, {
+      ...pipelineData,
+      currentStep: nextStepIndex,
+      completedSteps: [...(pipelineData.completedSteps ?? []), currentStep.agent],
+      stepHistory: history,
+      lastAdvancedAt: new Date().toISOString(),
+    });
+
+    ctx.logger.info("Direct pipeline advanced", {
+      issueId,
+      from: currentStep.agent,
+      to: nextStep.agent,
+    });
+  } else {
+    // Last step complete -- pipeline is finished, let the done status stand
+    await ctx.issues.createComment(
+      issueId,
+      `Pipeline complete! All ${pipelineData.steps.length} steps finished. Last step: ${currentStep.agent} (${currentStep.role}).`,
+      companyId,
+    );
+
+    await setPipelineData(ctx, issueId, {
+      ...pipelineData,
+      currentStep: pipelineData.steps.length,
+      completedSteps: [...(pipelineData.completedSteps ?? []), currentStep.agent],
+      stepHistory: history,
+      lastAdvancedAt: new Date().toISOString(),
+    });
+
+    const config = await getConfig(ctx);
+    await sendNotification(ctx, config, {
+      event: "pipeline.complete",
+      title: "Pipeline Complete",
+      message: `${issue.title ?? issueId} - All ${pipelineData.steps.length} steps finished.`,
+      issueId,
+      timestamp: new Date().toISOString(),
+    });
+
+    ctx.logger.info("Direct pipeline completed", { issueId });
+  }
+}
+
 async function handleIssueCompleted(ctx: PluginContext, event: PluginEvent): Promise<void> {
   const payload = event.payload as Record<string, unknown> | undefined;
   if (!payload) return;
@@ -315,11 +848,15 @@ async function handleIssueCompleted(ctx: PluginContext, event: PluginEvent): Pro
   const issue = await ctx.issues.get(issueId, companyId);
   if (!issue) return;
 
-  // Pipeline advance: only for sub-tasks with a parent
+  // Check if this issue itself is a pipeline parent being completed directly
   const parentId = issue.parentId;
-  if (!parentId) return;
+  if (!parentId) {
+    // This issue might be the pipeline parent itself -- handle direct completion
+    await handleDirectPipelineCompletion(ctx, event, issue);
+    return;
+  }
 
-  // Read pipeline data from parent's state
+  // Sub-task completion: read pipeline data from parent's state
   const pipelineData = await getPipelineData(ctx, parentId);
   if (!pipelineData || !pipelineData.steps || pipelineData.steps.length === 0) return;
 
@@ -353,6 +890,43 @@ async function handleIssueCompleted(ctx: PluginContext, event: PluginEvent): Pro
     });
   }
 
+  // Check if the completed step has verifiers configured
+  const verifiers = completedStep.verifiers;
+  if (verifiers && verifiers.length > 0) {
+    // Defer pipeline advance until verification completes.
+    // Update step history to mark completion, then emit verify requests.
+    await setPipelineData(ctx, parentId, {
+      ...pipelineData,
+      stepHistory: history,
+      lastAdvancedAt: new Date().toISOString(),
+    });
+
+    const config = await getConfig(ctx);
+    await emitVerifyRequests(
+      ctx,
+      parentId,
+      issueId,
+      completedStepIndex,
+      companyId,
+      verifiers,
+      config,
+    );
+
+    await ctx.issues.createComment(
+      parentId,
+      `Step ${completedStepIndex + 1} complete (${completedStep.agent} - ${completedStep.role}). Running verification (${verifiers.join(", ")}) before advancing.`,
+      companyId,
+    );
+
+    ctx.logger.info("Pipeline advance deferred for verification", {
+      parentId,
+      completedStep: completedStep.agent,
+      verifiers,
+    });
+    return;
+  }
+
+  // No verifiers -- advance immediately (original logic)
   if (nextStepIndex < pipelineData.steps.length) {
     const nextStep = pipelineData.steps[nextStepIndex]!;
 
@@ -463,6 +1037,37 @@ async function handlePipelineSavedOnActiveIssue(
 
   const status = issue.status;
   const assignee = issue.assigneeAgentId ?? "";
+
+  // Handle todo/backlog: assign to step 1 agent immediately
+  if (status === "todo" || status === "backlog") {
+    if (data.steps.length > 0) {
+      const firstStep = data.steps[0]!;
+      // Reassign to step 1 agent if not already correct
+      if (assignee !== firstStep.agentId) {
+        await ctx.issues.update(issueId, { assigneeAgentId: firstStep.agentId }, companyId);
+        await ctx.issues.createComment(
+          issueId,
+          `Pipeline saved: reassigning to ${firstStep.agent} (step 1/${data.steps.length}).`,
+          companyId,
+        );
+      }
+      const history = [{
+        stepIndex: 0,
+        agent: firstStep.agent,
+        status: "active" as const,
+        startedAt: new Date().toISOString(),
+      }];
+      await setPipelineData(ctx, issueId, {
+        ...data,
+        currentStep: 0,
+        completedSteps: [],
+        stepHistory: history,
+        startedAt: new Date().toISOString(),
+        lastAdvancedAt: new Date().toISOString(),
+      });
+    }
+    return;
+  }
 
   // Only applies to issues that are already in_progress or done
   if (status !== "in_progress" && status !== "done") return;
@@ -953,10 +1558,12 @@ async function registerDataHandlers(ctx: PluginContext): Promise<void> {
 
     const data = await getPipelineData(ctx, issueId);
     const agents = companyId ? await ctx.agents.list({ companyId, limit: 200, offset: 0 }) : [];
+    const availableVerifiers = await getVerifierRegistry(ctx);
 
     return {
       pipeline: data,
       agents: agents.map((a) => ({ id: a.id, name: a.name, role: a.role })),
+      availableVerifiers,
     };
   });
 
@@ -1184,6 +1791,28 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
       message: "This is a test notification from Pipeline Controller. If you see this, notifications are working.",
       timestamp: new Date().toISOString(),
     });
+    return { ok: true };
+  });
+
+  // Register a verifier plugin manually
+  ctx.actions.register("register-verifier", async (params) => {
+    const pluginId = typeof params.pluginId === "string" ? params.pluginId : "";
+    if (!pluginId) throw new Error("pluginId is required");
+    const displayName = typeof params.displayName === "string" ? params.displayName : undefined;
+    await registerVerifierPlugin(ctx, pluginId, displayName);
+    return { ok: true };
+  });
+
+  // Remove a verifier plugin from registry
+  ctx.actions.register("unregister-verifier", async (params) => {
+    const pluginId = typeof params.pluginId === "string" ? params.pluginId : "";
+    if (!pluginId) throw new Error("pluginId is required");
+    const key = { scopeKind: "instance" as const, stateKey: STATE_KEYS.verifierRegistry };
+    const existing = (await ctx.state.get(key)) as { verifiers: VerifierRegistryEntry[] } | null;
+    if (existing) {
+      existing.verifiers = existing.verifiers.filter((v) => v.pluginId !== pluginId);
+      await ctx.state.set(key, existing);
+    }
     return { ok: true };
   });
 
@@ -1424,7 +2053,7 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
 
 const plugin: PaperclipPlugin = definePlugin({
   async setup(ctx) {
-    ctx.logger.info("Pipeline Controller v4 setup starting", { pluginId: PLUGIN_ID });
+    ctx.logger.info("Pipeline Controller v5 setup starting", { pluginId: PLUGIN_ID });
 
     // Event: auto-advance on issue completion
     ctx.events.on("issue.updated", async (event: PluginEvent) => {
@@ -1432,6 +2061,15 @@ const plugin: PaperclipPlugin = definePlugin({
         await handleIssueCompleted(ctx, event);
       } catch (err) {
         ctx.logger.error("Error handling issue.updated", { error: String(err) });
+      }
+    });
+
+    // Event: handle verify-result from verifier plugins
+    ctx.events.on("plugin.content-verifier.verify-result", async (event: PluginEvent) => {
+      try {
+        await handleVerifyResult(ctx, event);
+      } catch (err) {
+        ctx.logger.error("Error handling verify-result", { error: String(err) });
       }
     });
 
@@ -1467,7 +2105,7 @@ const plugin: PaperclipPlugin = definePlugin({
     await registerDataHandlers(ctx);
     await registerActionHandlers(ctx);
 
-    ctx.logger.info("Pipeline Controller v4 setup complete");
+    ctx.logger.info("Pipeline Controller v5 setup complete");
   },
 
   async onHealth() {
